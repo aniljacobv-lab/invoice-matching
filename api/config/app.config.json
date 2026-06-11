@@ -1,0 +1,19 @@
+{
+  "$comment": "Central tunables for Invoice Matching. Env overrides via process.env.",
+  "matching": {
+    "$comment": "Tolerances when comparing invoice line vs PO line. priceTolPct is +/- percent of unit cost; qtyTolPct is +/- percent of ordered qty; absDollarTol is a flat $ ceiling regardless of percent (so tiny invoices don't auto-pass).",
+    "priceTolPct": 2.0,
+    "qtyTolPct": 5.0,
+    "absDollarTol": 25.00,
+    "matchMode": "THREE_WAY"
+  },
+  "approvals": {
+    "autoApproveCleanMatch": false,
+    "thresholds": [
+      { "tier": 2, "exceptionUsd": 1000 },
+      { "tier": 3, "exceptionUsd": 10000 },
+      { "tier": 4, "exceptionUsd": 50000 }
+    ]
+  },
+  "ai": { "model": "claude-sonnet-4-6", "maxTokens": 1024 }
+}

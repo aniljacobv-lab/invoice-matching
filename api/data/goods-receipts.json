@@ -1,0 +1,12 @@
+[
+  { "grId": 9001, "grNumber": "GR-9001", "poId": 5001, "receivedDate": "2026-05-09",
+    "lines": [ { "lineNo": 1, "sku": 30001, "qtyReceived": 20 }, { "lineNo": 2, "sku": 30002, "qtyReceived": 60 }, { "lineNo": 3, "sku": 30003, "qtyReceived": 30 } ] },
+  { "grId": 9002, "grNumber": "GR-9002", "poId": 5002, "receivedDate": "2026-05-12",
+    "lines": [ { "lineNo": 1, "sku": 40001, "qtyReceived": 200 }, { "lineNo": 2, "sku": 40002, "qtyReceived": 100 } ] },
+  { "grId": 9003, "grNumber": "GR-9003", "poId": 5003, "receivedDate": "2026-05-14",
+    "lines": [ { "lineNo": 1, "sku": 50001, "qtyReceived": 48 }, { "lineNo": 2, "sku": 50002, "qtyReceived": 36 }, { "lineNo": 3, "sku": 50003, "qtyReceived": 24 } ] },
+  { "grId": 9004, "grNumber": "GR-9004", "poId": 5004, "receivedDate": "2026-05-17",
+    "lines": [ { "lineNo": 1, "sku": 60001, "qtyReceived": 50 }, { "lineNo": 2, "sku": 60002, "qtyReceived": 18 } ] },
+  { "grId": 9005, "grNumber": "GR-9005", "poId": 5005, "receivedDate": "2026-05-21",
+    "lines": [ { "lineNo": 1, "sku": 70001, "qtyReceived": 80 }, { "lineNo": 2, "sku": 70002, "qtyReceived": 40 } ] }
+]

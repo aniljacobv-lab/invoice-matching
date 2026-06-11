@@ -1,0 +1,7 @@
+[
+  { "vendorId": 101, "vendorName": "Acme Office Supplies", "contact": "ar@acme-office.com", "taxId": "13-1234567", "paymentTermsDays": 30 },
+  { "vendorId": 102, "vendorName": "Pacific Beverage Co.",  "contact": "billing@pacbev.com",  "taxId": "94-7654321", "paymentTermsDays": 45 },
+  { "vendorId": 103, "vendorName": "Northstar Cleaning",    "contact": "accounts@northstar.com", "taxId": "27-9988776", "paymentTermsDays": 30 },
+  { "vendorId": 104, "vendorName": "Liberty Snacks LLC",     "contact": "ap@libertysnacks.com",   "taxId": "55-1357924", "paymentTermsDays": 60 },
+  { "vendorId": 105, "vendorName": "Summit Paper Products",  "contact": "invoices@summitpaper.com","taxId": "82-2468135","paymentTermsDays": 30 }
+]

@@ -1,0 +1,57 @@
+[
+  {
+    "poId": 5001, "poNumber": "PO-5001", "vendorId": 101, "vendorName": "Acme Office Supplies",
+    "orderDate": "2026-05-01", "expectedDeliveryDate": "2026-05-10", "status": "CLOSED",
+    "lines": [
+      { "lineNo": 1, "sku": 30001, "description": "Letter copy paper, 5000 sht/case", "qty": 20, "unitCost": 38.50 },
+      { "lineNo": 2, "sku": 30002, "description": "Gel pens, 12-pk black",             "qty": 60, "unitCost":  5.25 },
+      { "lineNo": 3, "sku": 30003, "description": "Sticky notes, 4x6, 12-pad",          "qty": 30, "unitCost":  7.10 }
+    ],
+    "totalUsd": 1304.50
+  },
+  {
+    "poId": 5002, "poNumber": "PO-5002", "vendorId": 102, "vendorName": "Pacific Beverage Co.",
+    "orderDate": "2026-05-04", "expectedDeliveryDate": "2026-05-12", "status": "CLOSED",
+    "lines": [
+      { "lineNo": 1, "sku": 40001, "description": "Spring water, 24x16.9oz case",  "qty": 200, "unitCost": 6.75 },
+      { "lineNo": 2, "sku": 40002, "description": "Sparkling water, 12x12oz case", "qty": 100, "unitCost": 9.40 }
+    ],
+    "totalUsd": 2290.00
+  },
+  {
+    "poId": 5003, "poNumber": "PO-5003", "vendorId": 103, "vendorName": "Northstar Cleaning",
+    "orderDate": "2026-05-08", "expectedDeliveryDate": "2026-05-14", "status": "CLOSED",
+    "lines": [
+      { "lineNo": 1, "sku": 50001, "description": "All-purpose cleaner, gallon",        "qty": 48, "unitCost": 4.85 },
+      { "lineNo": 2, "sku": 50002, "description": "Microfiber cloths, 24-pk",            "qty": 36, "unitCost": 8.10 },
+      { "lineNo": 3, "sku": 50003, "description": "Trash liners, 55 gal, 100-pk",         "qty": 24, "unitCost": 22.00 }
+    ],
+    "totalUsd": 1058.40
+  },
+  {
+    "poId": 5004, "poNumber": "PO-5004", "vendorId": 104, "vendorName": "Liberty Snacks LLC",
+    "orderDate": "2026-05-10", "expectedDeliveryDate": "2026-05-18", "status": "PARTIAL",
+    "lines": [
+      { "lineNo": 1, "sku": 60001, "description": "Pretzel rods, 16oz, 12-ct case", "qty": 50, "unitCost": 18.00 },
+      { "lineNo": 2, "sku": 60002, "description": "Trail mix, 32oz, 6-ct case",      "qty": 30, "unitCost": 27.50 }
+    ],
+    "totalUsd": 1725.00
+  },
+  {
+    "poId": 5005, "poNumber": "PO-5005", "vendorId": 105, "vendorName": "Summit Paper Products",
+    "orderDate": "2026-05-12", "expectedDeliveryDate": "2026-05-22", "status": "CLOSED",
+    "lines": [
+      { "lineNo": 1, "sku": 70001, "description": "Paper towels, 12-roll bundle", "qty": 80, "unitCost": 24.00 },
+      { "lineNo": 2, "sku": 70002, "description": "Toilet tissue, 36-roll bundle", "qty": 40, "unitCost": 32.50 }
+    ],
+    "totalUsd": 3220.00
+  },
+  {
+    "poId": 5006, "poNumber": "PO-5006", "vendorId": 102, "vendorName": "Pacific Beverage Co.",
+    "orderDate": "2026-05-20", "expectedDeliveryDate": "2026-05-28", "status": "OPEN",
+    "lines": [
+      { "lineNo": 1, "sku": 40003, "description": "Cold brew coffee, 8x32oz case", "qty": 60, "unitCost": 48.00 }
+    ],
+    "totalUsd": 2880.00
+  }
+]

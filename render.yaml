@@ -1,0 +1,19 @@
+# Render blueprint — deploys Invoice Matching as a single Web Service.
+# Connect this repo at https://dashboard.render.com/select-repo to auto-create.
+services:
+  - type: web
+    name: invoice-matching
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: |
+      cd web && npm ci && npm run build && cd ../api && npm ci && npm run build
+    startCommand: cd api && node dist/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: HOST
+        value: "0.0.0.0"
+      - key: ANTHROPIC_API_KEY
+        sync: false
