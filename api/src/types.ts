@@ -1,100 +1,152 @@
-// Shared domain types for the Invoice Matching POC.
+// EDI domain — mirrors pkg_edi_match.sql Section 3 staging+result tables.
+// 'DC' = warehouse / cross-dock supply (PO-driven, 3-way capable).
+// 'DSD' = direct store delivery (vendor → store, often no inbound PO).
+
+export type Flow = 'DC' | 'DSD' | 'UNK';
 
 export interface Vendor {
-  vendorId: number;
+  vendorId: string;
   vendorName: string;
-  contact?: string;
-  taxId?: string;
-  paymentTermsDays?: number;
+  flow: Flow;
 }
 
+// 850 — Purchase Order
 export interface POLine {
   lineNo: number;
-  sku: number;
+  upc: string;
   description: string;
   qty: number;
-  unitCost: number;
+  uom: string;
+  unitPrice: number;
 }
 export interface PurchaseOrder {
-  poId: number;
-  poNumber: string;
-  vendorId: number;
+  poNum: string;
+  vendorId: string;
   vendorName: string;
-  orderDate: string;
-  expectedDeliveryDate: string;
-  status: 'OPEN' | 'PARTIAL' | 'CLOSED' | 'CANCELLED';
+  storeOrDc: string;
+  flow: Flow;
+  poDate: string | null;
+  totalQty: number;
+  totalAmt: number;
+  lineCount: number;
   lines: POLine[];
-  totalUsd: number;
+  srcFile: string;
 }
 
-export interface GRLine { lineNo: number; sku: number; qtyReceived: number; }
-export interface GoodsReceipt {
-  grId: number;
-  grNumber: string;
-  poId: number;
-  receivedDate: string;
-  lines: GRLine[];
+// 856 — Advance Ship Notice
+export interface ASNLine { upc: string; qty: number; uom: string; sscc?: string; }
+export interface ASNPack { sscc: string; items: ASNLine[]; }
+export interface AdvanceShipNotice {
+  asnNum: string;
+  refInvoiceNum: string;     // REF*IV — DSD invoices link back via this
+  vendorId: string;
+  storeOrDc: string;
+  poNum: string | null;
+  flow: Flow;
+  shipDate: string | null;
+  deliveryDate: string | null;
+  cartonCount: number;
+  totalQty: number;
+  lineCount: number;
+  packs: ASNPack[];
+  bolNumber?: string;
+  srcFile: string;
 }
 
+// 810 — Invoice
 export interface InvoiceLine {
   lineNo: number;
-  sku: number;
+  upc: string;
   description: string;
   qty: number;
+  uom: string;
   unitPrice: number;
   amount: number;
 }
-export type InvoiceStatus =
-  | 'PENDING_MATCH'       // newly arrived, no match attempt yet
-  | 'MATCHED'             // 2-way or 3-way clean within tolerance
-  | 'EXCEPTION'           // discrepancies present, needs review
-  | 'APPROVED'            // exceptions resolved / accepted
-  | 'REJECTED'            // returned to vendor
-  | 'PAID';               // booked for payment
 export interface Invoice {
-  invoiceId: number;
-  invoiceNumber: string;
-  vendorId: number;
+  invoiceNum: string;
+  invoiceCore: string;       // PepsiCo: 10-char core without YYMMDD suffix
+  vendorId: string;
   vendorName: string;
-  poNumber: string | null;   // declared on invoice; may be wrong/missing
-  invoiceDate: string;
-  receivedDate: string;
-  dueDate: string;
-  totalUsd: number;
-  status: InvoiceStatus;
+  storeOrDc: string;
+  poNum: string | null;
+  flow: Flow;
+  invoiceDate: string | null;
+  paymentTermsDays: number | null;
+  grossAmt: number;
+  netAmt: number;
+  totalQty: number;
+  lineCount: number;
   lines: InvoiceLine[];
-  notes?: string | null;
+  srcFile: string;
 }
 
-// ---- match result ----
-export type DiscrepancyKind =
-  | 'PRICE_DIFF' | 'QTY_OVER' | 'QTY_UNDER' | 'NOT_RECEIVED' | 'PARTIAL_RECEIPT'
-  | 'SKU_NOT_ON_PO' | 'VENDOR_MISMATCH' | 'PO_NOT_FOUND' | 'AMOUNT_DIFF';
-export interface LineMatch {
-  invoiceLineNo: number;
-  sku: number;
-  description: string;
-  poLineNo: number | null;
-  grLineNo: number | null;
-  invoiceQty: number; invoiceUnitPrice: number; invoiceAmount: number;
-  poQty: number | null; poUnitCost: number | null; poAmount: number | null;
-  grQtyReceived: number | null;
-  discrepancies: { kind: DiscrepancyKind; message: string; dollarImpact: number }[];
-}
+// ---- match result + exception (mirrors SQL Section 3) ------------------
+export type MatchStatus = '3WAY' | '2WAY' | 'QTY_VAR' | 'AMT_VAR' | 'INV_NO_ASN' | 'ASN_NO_INV' | 'PO_NO_RCPT';
+export type Severity = 'HIGH' | 'MED' | 'LOW';
+export type ExceptionStatus = 'OPEN' | 'ASSIGNED' | 'RESOLVED' | 'WRITTEN_OFF';
+
 export interface MatchResult {
-  invoiceId: number;
-  invoiceNumber: string;
-  poId: number | null;
-  poNumber: string | null;
-  grId: number | null;
-  vendorOk: boolean;
-  totalsOk: boolean;
-  mode: 'TWO_WAY' | 'THREE_WAY';
-  cleanLines: number;
-  exceptionLines: number;
-  totalDollarImpact: number;       // sum of |dollarImpact|
-  computedStatus: InvoiceStatus;
-  lines: LineMatch[];
-  topDiscrepancyKinds: DiscrepancyKind[];
+  matchId: number;
+  flow: Flow;
+  vendorId: string;
+  storeOrDc: string;
+  poNum: string | null;
+  asnNum: string | null;
+  invoiceNum: string | null;
+  invoiceCore: string | null;
+  poQty: number | null;
+  asnQty: number | null;
+  invQty: number | null;
+  poAmt: number | null;
+  invAmtGross: number | null;
+  invAmtNet: number | null;
+  qtyVarAsnInv: number | null;
+  qtyVarPoAsn: number | null;
+  amtVarPoInv: number | null;
+  matchStatus: MatchStatus;
+  matchScore: number;       // 0-100
+  asnLines: number | null;
+  invLines: number | null;
+  exceptionNote: string | null;
+  shipDate: string | null;
+  invoiceDate: string | null;
   matchedAt: string;
+  runId: number;
+}
+
+export interface MatchException {
+  excId: number;
+  matchId: number;
+  flow: Flow;
+  vendorId: string;
+  storeOrDc: string;
+  poNum: string | null;
+  asnNum: string | null;
+  invoiceNum: string | null;
+  excType: MatchStatus;     // mirrors match_status non-3WAY
+  severity: Severity;
+  excAmount: number;
+  recommendedAction: string;
+  status: ExceptionStatus;
+  assignedTo: string | null;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+  resolutionNote: string | null;
+  createdAt: string;
+  ageDays: number;
+}
+
+export interface RunLog {
+  runId: number;
+  runType: 'DSD' | 'DC' | 'FULL';
+  startedAt: string;
+  endedAt: string | null;
+  posProcessed: number;
+  asnsProcessed: number;
+  invsProcessed: number;
+  matchesCreated: number;
+  exceptionsOpen: number;
+  status: 'RUNNING' | 'OK' | 'ERROR';
+  errorMsg: string | null;
 }

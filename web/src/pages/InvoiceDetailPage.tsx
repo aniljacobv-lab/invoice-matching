@@ -1,155 +1,118 @@
 import { useEffect, useState } from 'react';
-import { api, type Invoice, type InvoiceStatus, type MatchResult, type LineMatch } from '../lib/api';
+import { api, type Invoice, type AdvanceShipNotice, type PurchaseOrder, type MatchResult, type MatchStatus } from '../lib/api';
 
-interface Props { invoiceId: number; onClose: () => void; }
+interface Props { invoiceNum: string; onClose: () => void; }
+const usd = (n: number | null | undefined) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const num = (n: number | null | undefined) => n == null ? '—' : n.toLocaleString('en-US');
+const statusFg = (s: MatchStatus | null): string => !s ? 'text-slate-500'
+  : s === '3WAY' ? 'text-emerald-700'
+  : s === '2WAY' ? 'text-teal-700'
+  : s === 'INV_NO_ASN' || s === 'AMT_VAR' ? 'text-red-700'
+  : 'text-amber-700';
 
-const STATUS_STYLE: Record<InvoiceStatus, string> = {
-  PENDING_MATCH: 'bg-slate-100 text-slate-600', MATCHED: 'bg-green-50 text-green-700',
-  EXCEPTION: 'bg-amber-50 text-amber-700', APPROVED: 'bg-blue-50 text-blue-700',
-  REJECTED: 'bg-red-50 text-red-700', PAID: 'bg-slate-200 text-slate-700',
-};
-const usd = (n: number | null | undefined) => n == null ? '—' : `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const num = (n: number | null | undefined) => n == null ? '—' : n.toLocaleString();
+export function InvoiceDetailPage({ invoiceNum, onClose }: Props) {
+  const [data, setData] = useState<{ invoice: Invoice; asn: AdvanceShipNotice | null; po: PurchaseOrder | null; match: MatchResult | null } | null>(null);
+  const [loading, setLoading] = useState(true);
 
-const KIND_LABEL: Record<string, string> = {
-  PRICE_DIFF: 'Price', QTY_OVER: 'Over qty', QTY_UNDER: 'Under qty',
-  NOT_RECEIVED: 'Not received', PARTIAL_RECEIPT: 'Partial receipt',
-  SKU_NOT_ON_PO: 'SKU not on PO', VENDOR_MISMATCH: 'Vendor mismatch',
-  PO_NOT_FOUND: 'PO not found', AMOUNT_DIFF: 'Math error',
-};
+  useEffect(() => {
+    setLoading(true);
+    api.invoiceDetail(invoiceNum).then(setData).finally(() => setLoading(false));
+  }, [invoiceNum]);
 
-export function InvoiceDetailPage({ invoiceId, onClose }: Props) {
-  const [invoice, setInvoice] = useState<Invoice | null>(null);
-  const [match, setMatch] = useState<MatchResult | null>(null);
-  const [requiredTier, setRequiredTier] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  if (loading) return <div className="p-8 text-sm text-slate-400">Loading invoice…</div>;
+  if (!data) return <div className="p-8 text-sm text-red-600">Invoice not found.</div>;
+  const { invoice, asn, po, match } = data;
 
-  async function load() {
-    const r = await api.getInvoice(invoiceId);
-    setInvoice(r.invoice); setMatch(r.match);
+  // Build a unified line view keyed by UPC
+  const byUpc = new Map<string, { invoice?: typeof invoice.lines[0]; po?: typeof po extends { lines: (infer L)[] } ? L : never; asn?: { qty: number } }>();
+  for (const l of invoice.lines) byUpc.set(l.upc, { invoice: l });
+  if (po) for (const l of po.lines) {
+    const cur = byUpc.get(l.upc) ?? {}; (cur as any).po = l; byUpc.set(l.upc, cur);
   }
-  useEffect(() => { load(); }, [invoiceId]);
-
-  async function runMatch() {
-    setBusy(true); setNote(null);
-    try { const r = await api.matchInvoice(invoiceId); setMatch(r.match); setRequiredTier(r.requiredTier); await load(); }
-    catch (e: any) { setNote(String(e?.message ?? e)); }
-    finally { setBusy(false); }
+  if (asn) for (const p of asn.packs) for (const it of p.items) {
+    const cur = byUpc.get(it.upc) ?? {}; (cur as any).asn = { qty: ((cur as any).asn?.qty ?? 0) + it.qty }; byUpc.set(it.upc, cur);
   }
-  async function approve() { setBusy(true); try { await api.setInvoiceStatus(invoiceId, 'APPROVED', 'Approved with exceptions reviewed'); await load(); } finally { setBusy(false); } }
-  async function reject() { setBusy(true); try { await api.setInvoiceStatus(invoiceId, 'REJECTED', 'Returned to vendor'); await load(); } finally { setBusy(false); } }
-
-  if (!invoice) return <div className="p-8 text-sm text-slate-400">Loading invoice…</div>;
 
   return (
     <div className="flex h-full flex-col">
       <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-8 py-4 backdrop-blur">
-        <button onClick={onClose} className="mb-2 inline-flex items-center text-[11px] font-medium uppercase tracking-wide text-slate-400 hover:text-slate-700">&larr;&nbsp;Back to Invoices</button>
+        <button onClick={onClose} className="mb-2 inline-flex items-center text-[11px] font-medium uppercase tracking-wide text-slate-400 hover:text-slate-700">&larr;&nbsp;Back to match dashboard</button>
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
           <div className="min-w-0 flex-1">
-            <h2 className="text-xl font-semibold tracking-tight text-slate-900">{invoice.invoiceNumber}</h2>
-            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
-              <span className={`fd-pill ${STATUS_STYLE[invoice.status]}`}>{invoice.status}</span>
-              <span>{invoice.vendorName}</span>
-              <span>·</span>
-              <span>PO {invoice.poNumber ?? '—'}</span>
-              <span>·</span>
-              <span>Received {invoice.receivedDate}</span>
-              <span>·</span>
-              <span>Due {invoice.dueDate}</span>
-              <span>·</span>
-              <span className="font-medium text-slate-700">{usd(invoice.totalUsd)}</span>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-900">Invoice {invoice.invoiceNum}</h2>
+            <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+              {match && <span className={`fd-pill bg-slate-100 ${statusFg(match.matchStatus)}`}>{match.matchStatus}</span>}
+              <span>{invoice.vendorName} <span className="text-slate-400">({invoice.vendorId})</span></span>
+              <span>·</span><span>Store {invoice.storeOrDc}</span>
+              <span>·</span><span>{invoice.invoiceDate ?? 'No date'}</span>
+              <span>·</span><span className="font-medium text-slate-700">{usd(invoice.grossAmt)} gross / {usd(invoice.netAmt)} net</span>
+              {invoice.poNum && <><span>·</span><span>PO {invoice.poNum}</span></>}
             </p>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button onClick={runMatch} disabled={busy} className="fd-btn fd-btn-primary">{busy ? 'Working…' : (match ? 'Re-run matching' : 'Run matching')}</button>
-            {match && invoice.status === 'EXCEPTION' && <button onClick={approve} disabled={busy} className="fd-btn fd-btn-ghost text-green-700">Approve with exceptions</button>}
-            {match && invoice.status !== 'PAID' && invoice.status !== 'REJECTED' && <button onClick={reject} disabled={busy} className="fd-btn fd-btn-ghost text-red-700">Reject</button>}
           </div>
         </div>
       </header>
-
       <div className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-5xl space-y-5">
-          {note && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{note}</div>}
-          {invoice.notes && <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs italic text-slate-600">{invoice.notes}</div>}
+          {/* Match summary cards */}
+          <section className="grid grid-cols-3 gap-3">
+            <Card label="Invoice 810" value={invoice.invoiceNum} sub={`${invoice.lineCount} lines · ${num(invoice.totalQty)} units`} tone="bg-blue-50" />
+            <Card label="ASN 856" value={asn?.asnNum ?? 'MISSING'} sub={asn ? `${asn.cartonCount} cartons · ${num(asn.totalQty)} units · ship ${asn.shipDate ?? '—'}` : 'No ASN linked — pay-on-invoice flow'} tone={asn ? 'bg-violet-50' : 'bg-red-50'} />
+            <Card label="PO 850" value={po?.poNum ?? 'MISSING'} sub={po ? `${po.lineCount} lines · ${num(po.totalQty)} units · ${usd(po.totalAmt)}` : 'DSD invoice — no inbound PO'} tone={po ? 'bg-sky-50' : 'bg-slate-50'} />
+          </section>
 
-          {match ? (
-            <section className="fd-card p-5">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h3 className="fd-section-title">Match summary</h3>
-                <span className="text-xs text-slate-500">{match.mode === 'THREE_WAY' ? '3-way match (PO + GR + invoice)' : '2-way match (PO + invoice)'}</span>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                <Kpi label="Clean lines" value={match.cleanLines} tone="text-green-700" />
-                <Kpi label="Exception lines" value={match.exceptionLines} tone={match.exceptionLines > 0 ? 'text-amber-700' : 'text-slate-500'} />
-                <Kpi label="$ at risk" value={usd(match.totalDollarImpact)} tone={match.totalDollarImpact > 0 ? 'text-red-600' : 'text-slate-500'} />
-                <Kpi label="Required tier" value={requiredTier != null ? `Tier ${requiredTier}` : '—'} tone="text-blue-700" />
-              </div>
-              {match.topDiscrepancyKinds.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {match.topDiscrepancyKinds.map((k) => <span key={k} className="fd-pill bg-amber-50 text-amber-700">{KIND_LABEL[k] ?? k}</span>)}
-                </div>
-              )}
-              <p className="mt-2 text-[11px] text-slate-400">Vendor ID check: {match.vendorOk ? '✓ matches PO' : '✗ vendor mismatch'} · Total check: {match.totalsOk ? '✓ within tolerance' : '✗ totals differ'}</p>
-            </section>
-          ) : (
-            <section className="fd-card p-5">
-              <h3 className="fd-section-title mb-2">No match run yet</h3>
-              <p className="text-xs text-slate-500">Click "Run matching" to compare this invoice against its PO {invoice.poNumber ? `(${invoice.poNumber})` : ''} and any goods receipts.</p>
-            </section>
+          {match?.exceptionNote && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"><span className="font-medium">Match note:</span> {match.exceptionNote}</div>
           )}
 
-          <section className="fd-card p-5">
-            <h3 className="fd-section-title mb-3">Line-level breakdown</h3>
-            <div className="overflow-hidden rounded-lg border border-slate-200">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50 text-left text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2">SKU · Description</th>
-                    <th className="px-3 py-2 text-right">Inv qty</th>
-                    <th className="px-3 py-2 text-right">PO qty</th>
-                    <th className="px-3 py-2 text-right">Received</th>
-                    <th className="px-3 py-2 text-right">Inv unit</th>
-                    <th className="px-3 py-2 text-right">PO unit</th>
-                    <th className="px-3 py-2 text-right">Inv amount</th>
-                    <th className="px-3 py-2">Issues</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {(match?.lines ?? invoice.lines.map((il) => ({
-                    invoiceLineNo: il.lineNo, sku: il.sku, description: il.description,
-                    poLineNo: null, grLineNo: null,
-                    invoiceQty: il.qty, invoiceUnitPrice: il.unitPrice, invoiceAmount: il.amount,
-                    poQty: null, poUnitCost: null, poAmount: null, grQtyReceived: null, discrepancies: [],
-                  }) as LineMatch)).map((l) => (
-                    <tr key={`${l.invoiceLineNo}-${l.sku}`} className={l.discrepancies.length ? 'bg-amber-50/40' : ''}>
-                      <td className="px-3 py-2"><span className="block font-medium text-slate-700">{l.description}</span><span className="text-[10px] text-slate-400">SKU {l.sku}</span></td>
-                      <td className="px-3 py-2 text-right tabular-nums text-slate-700">{num(l.invoiceQty)}</td>
-                      <td className={`px-3 py-2 text-right tabular-nums ${l.poQty != null && l.poQty !== l.invoiceQty ? 'text-amber-700' : 'text-slate-500'}`}>{num(l.poQty)}</td>
-                      <td className={`px-3 py-2 text-right tabular-nums ${l.grQtyReceived != null && l.grQtyReceived < l.invoiceQty ? 'text-red-600' : 'text-slate-500'}`}>{num(l.grQtyReceived)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-slate-700">{usd(l.invoiceUnitPrice)}</td>
-                      <td className={`px-3 py-2 text-right tabular-nums ${l.poUnitCost != null && Math.abs(l.poUnitCost - l.invoiceUnitPrice) > 0.005 ? 'text-amber-700' : 'text-slate-500'}`}>{usd(l.poUnitCost)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{usd(l.invoiceAmount)}</td>
-                      <td className="px-3 py-2">
-                        {l.discrepancies.length === 0 ? <span className="text-green-700">✓ clean</span> : (
-                          <div className="space-y-1">
-                            {l.discrepancies.map((d, i) => (
-                              <div key={i}>
-                                <span className="fd-pill bg-amber-100 text-amber-800">{KIND_LABEL[d.kind] ?? d.kind}</span>
-                                <span className="ml-1.5 text-slate-600">{d.message}</span>
-                                {d.dollarImpact !== 0 && <span className="ml-1 text-[11px] text-red-600">({d.dollarImpact >= 0 ? '+' : ''}{usd(Math.abs(d.dollarImpact))})</span>}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </td>
+          {/* Line-by-line comparison */}
+          <section className="fd-card overflow-hidden">
+            <div className="border-b border-slate-100 p-4"><h3 className="fd-section-title">Line-level comparison (keyed by UPC)</h3></div>
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-left text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">UPC / Description</th>
+                  <th className="px-3 py-2 text-right">Inv qty</th>
+                  <th className="px-3 py-2 text-right">ASN qty</th>
+                  <th className="px-3 py-2 text-right">PO qty</th>
+                  <th className="px-3 py-2 text-right">Inv unit</th>
+                  <th className="px-3 py-2 text-right">PO unit</th>
+                  <th className="px-3 py-2 text-right">Inv ext</th>
+                  <th className="px-3 py-2">Issue</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {[...byUpc.entries()].map(([upc, row]) => {
+                  const il: any = row.invoice; const pl: any = (row as any).po; const an: any = (row as any).asn;
+                  const issues: string[] = [];
+                  if (il && pl && Math.abs((il.unitPrice ?? 0) - (pl.unitPrice ?? 0)) > 0.005) issues.push(`price Δ $${((il.unitPrice ?? 0) - (pl.unitPrice ?? 0)).toFixed(2)}`);
+                  if (il && pl && il.qty !== pl.qty) issues.push(`qty Δ ${il.qty - pl.qty}`);
+                  if (il && an && il.qty !== an.qty) issues.push(`vs ASN ${il.qty - an.qty}`);
+                  if (il && !pl && po) issues.push('not on PO');
+                  if (il && !an && asn) issues.push('not on ASN');
+                  return (
+                    <tr key={upc} className={issues.length ? 'bg-amber-50/40' : ''}>
+                      <td className="px-3 py-1.5"><span className="block text-slate-700">{il?.description ?? pl?.description ?? '—'}</span><span className="font-mono text-[10px] text-slate-400">{upc}</span></td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{num(il?.qty)}</td>
+                      <td className={`px-3 py-1.5 text-right tabular-nums ${an && il && an.qty !== il.qty ? 'text-amber-700' : 'text-slate-500'}`}>{num(an?.qty)}</td>
+                      <td className={`px-3 py-1.5 text-right tabular-nums ${pl && il && pl.qty !== il.qty ? 'text-amber-700' : 'text-slate-500'}`}>{num(pl?.qty)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{usd(il?.unitPrice)}</td>
+                      <td className={`px-3 py-1.5 text-right tabular-nums ${pl && il && Math.abs(pl.unitPrice - il.unitPrice) > 0.005 ? 'text-amber-700' : 'text-slate-500'}`}>{usd(pl?.unitPrice)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{usd(il?.amount)}</td>
+                      <td className="px-3 py-1.5 text-xs text-amber-700">{issues.length === 0 ? <span className="text-emerald-700">✓</span> : issues.join(' · ')}</td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="fd-card p-5">
+            <h3 className="fd-section-title mb-2">Source EDI</h3>
+            <ul className="text-xs text-slate-500 space-y-0.5">
+              <li>Invoice from <span className="font-mono">{invoice.srcFile}</span> · core <span className="font-mono">{invoice.invoiceCore}</span> · terms Net {invoice.paymentTermsDays ?? '—'}</li>
+              {asn && <li>ASN from <span className="font-mono">{asn.srcFile}</span> · BOL {(asn as any).bolNumber ?? '—'} · ship {asn.shipDate ?? '—'} → delivery {asn.deliveryDate ?? '—'}</li>}
+              {po && <li>PO from <span className="font-mono">{po.srcFile}</span> · vendor {po.vendorId}</li>}
+            </ul>
           </section>
         </div>
       </div>
@@ -157,11 +120,12 @@ export function InvoiceDetailPage({ invoiceId, onClose }: Props) {
   );
 }
 
-function Kpi({ label, value, tone }: { label: string; value: string | number; tone: string }) {
+function Card({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 p-3">
-      <div className={`text-xl font-bold ${tone}`}>{value}</div>
-      <div className="mt-0.5 text-[11px] text-slate-500">{label}</div>
+    <div className={`rounded-xl border border-slate-200 p-4 ${tone}`}>
+      <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 truncate font-mono text-base font-semibold text-slate-800">{value}</div>
+      <div className="mt-0.5 text-[11px] text-slate-500">{sub}</div>
     </div>
   );
 }

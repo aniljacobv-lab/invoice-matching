@@ -1,63 +1,118 @@
-import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Vendor, PurchaseOrder, GoodsReceipt, Invoice, MatchResult } from '../types.js';
-import { config } from '../config.js';
+import { ingest } from '../lib/edi/ingest.js';
+import { runFullMatch } from '../lib/matcher.js';
+import type {
+  Vendor, PurchaseOrder, AdvanceShipNotice, Invoice,
+  MatchResult, MatchException, RunLog, ExceptionStatus,
+} from '../types.js';
 
-// ----------------------------------------------------------------------------
-// In-memory store. Seeds from api/data/*.json on startup. A production build
-// swaps this for Postgres (schema in docs); the public interface stays.
-// ----------------------------------------------------------------------------
+// In-memory EDI store. Boots by reading api/data/edi/*, running the matcher,
+// keeping everything indexed for the REST layer.
 export class MemoryStore {
   private vendors: Vendor[] = [];
   private pos: PurchaseOrder[] = [];
-  private grs: GoodsReceipt[] = [];
+  private asns: AdvanceShipNotice[] = [];
   private invoices: Invoice[] = [];
-  private matches = new Map<number, MatchResult>();   // invoiceId -> last match
-
-  private dataPath(name: string): string {
-    return resolve(process.cwd(), config.dataDir, name);
-  }
+  private results: MatchResult[] = [];
+  private exceptions: MatchException[] = [];
+  private runs: RunLog[] = [];
+  private runSeq = 1;
+  private excSeq = 10_000;
+  private filesProcessed: { file: string; type: string; count: number }[] = [];
 
   async init(): Promise<void> {
-    this.vendors = this.loadJson<Vendor[]>('vendors.json') ?? [];
-    this.pos = this.loadJson<PurchaseOrder[]>('purchase-orders.json') ?? [];
-    this.grs = this.loadJson<GoodsReceipt[]>('goods-receipts.json') ?? [];
-    this.invoices = this.loadJson<Invoice[]>('invoices.json') ?? [];
-    // Hydrate vendorName from vendorId if missing
-    const byVendorId = new Map(this.vendors.map((v) => [v.vendorId, v.vendorName]));
-    for (const p of this.pos) p.vendorName = p.vendorName ?? byVendorId.get(p.vendorId) ?? '';
-    for (const i of this.invoices) i.vendorName = i.vendorName ?? byVendorId.get(i.vendorId) ?? '';
-  }
-  private loadJson<T>(name: string): T | null {
-    const p = this.dataPath(name);
-    if (!existsSync(p)) return null;
-    try { return JSON.parse(readFileSync(p, 'utf8')) as T; } catch { return null; }
+    const start = Date.now();
+    const dir = resolve(process.cwd(), 'data', 'edi');
+    const ing = ingest(dir);
+    this.vendors = ing.vendors; this.pos = ing.pos; this.asns = ing.asns;
+    this.invoices = ing.invoices; this.filesProcessed = ing.filesProcessed;
+
+    const run: RunLog = {
+      runId: this.runSeq++, runType: 'FULL', startedAt: new Date().toISOString(),
+      endedAt: null, posProcessed: 0, asnsProcessed: 0, invsProcessed: 0,
+      matchesCreated: 0, exceptionsOpen: 0, status: 'RUNNING', errorMsg: null,
+    };
+    this.runs.push(run);
+    try {
+      const out = runFullMatch({ pos: this.pos, asns: this.asns, invoices: this.invoices, vendors: this.vendors });
+      // Stamp the run id onto every result; reassign exception ids to a unique seq.
+      this.results = out.results.map((r) => ({ ...r, runId: run.runId }));
+      this.exceptions = out.exceptions.map((e) => ({ ...e, excId: this.excSeq++ }));
+      run.posProcessed = out.posProcessed;
+      run.asnsProcessed = out.asnsProcessed;
+      run.invsProcessed = out.invsProcessed;
+      run.matchesCreated = out.results.length;
+      run.exceptionsOpen = out.exceptions.length;
+      run.endedAt = new Date().toISOString();
+      run.status = 'OK';
+    } catch (e: any) {
+      run.status = 'ERROR'; run.endedAt = new Date().toISOString(); run.errorMsg = (e?.message ?? String(e)).slice(0, 2000);
+    }
+    // console.info every important number so cold-start logs tell the story.
+    // eslint-disable-next-line no-console
+    console.info(`[edi-match] ingested ${this.vendors.length} vendors, ${this.pos.length} POs, ${this.asns.length} ASNs, ${this.invoices.length} invoices`);
+    // eslint-disable-next-line no-console
+    console.info(`[edi-match] matched in ${Date.now() - start}ms · ${this.results.length} results · ${this.exceptions.length} exceptions`);
   }
 
   // --- reads ---
   listVendors(): Vendor[] { return [...this.vendors]; }
-  listPurchaseOrders(): PurchaseOrder[] { return this.pos.map((p) => ({ ...p, lines: p.lines.map((l) => ({ ...l })) })); }
-  getPurchaseOrder(poId: number): PurchaseOrder | null { const p = this.pos.find((x) => x.poId === poId); return p ? { ...p, lines: p.lines.map((l) => ({ ...l })) } : null; }
-  getPoByNumber(poNumber: string): PurchaseOrder | null { const p = this.pos.find((x) => x.poNumber === poNumber); return p ? { ...p, lines: p.lines.map((l) => ({ ...l })) } : null; }
-  listGoodsReceipts(poId?: number): GoodsReceipt[] { return this.grs.filter((g) => poId == null || g.poId === poId).map((g) => ({ ...g, lines: g.lines.map((l) => ({ ...l })) })); }
-  listInvoices(filter?: { status?: string }): Invoice[] {
-    let xs = [...this.invoices];
-    if (filter?.status) xs = xs.filter((i) => i.status === filter.status);
-    return xs.map((i) => ({ ...i, lines: i.lines.map((l) => ({ ...l })) }));
+  listPOs(): PurchaseOrder[] { return [...this.pos]; }
+  getPO(poNum: string): PurchaseOrder | null { return this.pos.find((p) => p.poNum === poNum) ?? null; }
+  listASNs(): AdvanceShipNotice[] { return [...this.asns]; }
+  getASN(asnNum: string): AdvanceShipNotice | null { return this.asns.find((a) => a.asnNum === asnNum) ?? null; }
+  listInvoices(): Invoice[] { return [...this.invoices]; }
+  getInvoice(invoiceNum: string): Invoice | null { return this.invoices.find((i) => i.invoiceNum === invoiceNum) ?? null; }
+  listResults(): MatchResult[] { return [...this.results]; }
+  listExceptions(filter?: { vendor?: string; severity?: string; days?: number; status?: string }): MatchException[] {
+    const cutoff = filter?.days != null ? Date.now() - filter.days * 86400_000 : null;
+    return this.exceptions.filter((e) => {
+      if (filter?.vendor && e.vendorId !== filter.vendor) return false;
+      if (filter?.severity && e.severity !== filter.severity) return false;
+      if (filter?.status && e.status !== filter.status) return false;
+      if (cutoff != null && new Date(e.createdAt).getTime() < cutoff) return false;
+      return true;
+    });
   }
-  getInvoice(invoiceId: number): Invoice | null { const i = this.invoices.find((x) => x.invoiceId === invoiceId); return i ? { ...i, lines: i.lines.map((l) => ({ ...l })) } : null; }
+  getException(excId: number): MatchException | null { return this.exceptions.find((e) => e.excId === excId) ?? null; }
+  listRuns(): RunLog[] { return [...this.runs]; }
+  getFilesProcessed() { return [...this.filesProcessed]; }
 
-  // --- match storage ---
-  setMatch(m: MatchResult): void { this.matches.set(m.invoiceId, m); }
-  getMatch(invoiceId: number): MatchResult | null { return this.matches.get(invoiceId) ?? null; }
-  listMatches(): MatchResult[] { return [...this.matches.values()]; }
+  // --- mutations ---
+  async runFull(): Promise<RunLog> {
+    const run: RunLog = {
+      runId: this.runSeq++, runType: 'FULL', startedAt: new Date().toISOString(),
+      endedAt: null, posProcessed: 0, asnsProcessed: 0, invsProcessed: 0,
+      matchesCreated: 0, exceptionsOpen: 0, status: 'RUNNING', errorMsg: null,
+    };
+    this.runs.push(run);
+    try {
+      const out = runFullMatch({ pos: this.pos, asns: this.asns, invoices: this.invoices, vendors: this.vendors });
+      // Re-write results & exceptions for this run.
+      this.results = out.results.map((r) => ({ ...r, runId: run.runId }));
+      // Preserve resolution state for existing exceptions when possible (key on matchId).
+      const oldByMatch = new Map(this.exceptions.map((e) => [e.matchId, e]));
+      this.exceptions = out.exceptions.map((e) => {
+        const old = oldByMatch.get(e.matchId);
+        const next: MatchException = { ...e, excId: old?.excId ?? this.excSeq++ };
+        if (old) { next.status = old.status; next.assignedTo = old.assignedTo; next.resolvedAt = old.resolvedAt; next.resolvedBy = old.resolvedBy; next.resolutionNote = old.resolutionNote; }
+        return next;
+      });
+      run.posProcessed = out.posProcessed; run.asnsProcessed = out.asnsProcessed;
+      run.invsProcessed = out.invsProcessed; run.matchesCreated = out.results.length;
+      run.exceptionsOpen = this.exceptions.filter((e) => e.status === 'OPEN').length;
+      run.endedAt = new Date().toISOString(); run.status = 'OK';
+    } catch (e: any) {
+      run.status = 'ERROR'; run.endedAt = new Date().toISOString(); run.errorMsg = (e?.message ?? String(e)).slice(0, 2000);
+    }
+    return run;
+  }
 
-  // --- mutate invoice ---
-  setInvoiceStatus(invoiceId: number, status: Invoice['status'], notes?: string | null): Invoice | null {
-    const i = this.invoices.find((x) => x.invoiceId === invoiceId);
-    if (!i) return null;
-    i.status = status;
-    if (notes !== undefined) i.notes = notes;
-    return { ...i, lines: i.lines.map((l) => ({ ...l })) };
+  closeException(excId: number, status: ExceptionStatus, resolver: string, note: string | null): MatchException | null {
+    const e = this.exceptions.find((x) => x.excId === excId);
+    if (!e) return null;
+    e.status = status; e.resolvedBy = resolver; e.resolutionNote = note;
+    if (status === 'RESOLVED' || status === 'WRITTEN_OFF') e.resolvedAt = new Date().toISOString();
+    return e;
   }
 }

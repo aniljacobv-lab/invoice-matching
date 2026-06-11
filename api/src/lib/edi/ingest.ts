@@ -1,0 +1,152 @@
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type { Flow, PurchaseOrder, AdvanceShipNotice, Invoice, Vendor } from '../../types.js';
+import { parse810File } from './parse810.js';
+import { parse850File } from './parse850.js';
+import { parse856File } from './parse856.js';
+import { parseFlat810File } from './parse810Flat.js';
+import { parseFlat856File } from './parse856Flat.js';
+import { parseFlat850File } from './parse850Flat.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reads everything under api/data/edi/ and produces normalized arrays of
+// vendors / POs / ASNs / invoices the in-memory store and matcher consume.
+//
+// Vendors are inferred from the data (PepsiCo names + a Quaker entry for the
+// inbound PO). DSD invoices that lack a vendor_id field get tagged with the
+// REF*VR/N1*RI vendor id from the 810.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface IngestResult {
+  vendors: Vendor[];
+  pos: PurchaseOrder[];
+  asns: AdvanceShipNotice[];
+  invoices: Invoice[];
+  filesProcessed: { file: string; type: string; count: number }[];
+}
+
+// Known PepsiCo vendor numbers per the SQL package smoke notes + the mock data
+// in the EdiMatch.jsx component. DSD vendors are 96033 + sub-IDs, Quaker is 1558.
+const KNOWN: Record<string, { name: string; flow: Flow }> = {
+  '96033':  { name: 'PepsiCo Beverages (DSD)',     flow: 'DSD' },
+  '108467': { name: 'PepsiCo Beverages (DSD)',     flow: 'DSD' },
+  '108464': { name: 'PepsiCo Beverages (DSD)',     flow: 'DSD' },
+  '108466': { name: 'PepsiCo Beverages (DSD)',     flow: 'DSD' },
+  '108465': { name: 'PepsiCo Beverages (DSD)',     flow: 'DSD' },
+  '1558':   { name: 'Quaker (PepsiCo Foods)',      flow: 'DC'  },
+  '048407840': { name: 'PepsiCo Beverage Sales LLC', flow: 'DSD' },
+};
+
+export function ingest(ediDir: string): IngestResult {
+  const filesProcessed: { file: string; type: string; count: number }[] = [];
+  const pos: PurchaseOrder[] = [];
+  const asns: AdvanceShipNotice[] = [];
+  const invoices: Invoice[] = [];
+
+  if (!existsSync(ediDir)) return { vendors: [], pos, asns, invoices, filesProcessed };
+
+  for (const file of readdirSync(ediDir)) {
+    const full = resolve(ediDir, file);
+    const lower = file.toLowerCase();
+    try {
+      const raw = readFileSync(full, 'utf8');
+      // ─── X12 documents detected by ISA*… header ──────────────────────────
+      if (raw.startsWith('ISA')) {
+        if (lower.includes('810')) {
+          const inv = parse810File(raw);
+          for (const i of inv) {
+            const known = KNOWN[i.vendorId];
+            invoices.push({
+              invoiceNum: i.invoiceNumber, invoiceCore: i.invoiceCore,
+              vendorId: i.vendorId, vendorName: i.vendorName || known?.name || `Vendor ${i.vendorId}`,
+              storeOrDc: i.storeNumber, poNum: null,
+              flow: known?.flow ?? 'DSD',
+              invoiceDate: i.invoiceDate, paymentTermsDays: i.paymentTermsDays,
+              grossAmt: i.grossUsd ?? 0, netAmt: i.netUsd ?? 0,
+              totalQty: i.lines.reduce((a, l) => a + l.qty, 0),
+              lineCount: i.lineCount ?? i.lines.length,
+              lines: i.lines.map((l) => ({
+                lineNo: l.lineNo, upc: l.upc, description: l.description,
+                qty: l.qty, uom: l.uom,
+                unitPrice: (l.unitPriceRaw ?? 0) / 100,
+                amount: l.ext ?? 0,
+              })),
+              srcFile: file,
+            });
+          }
+          filesProcessed.push({ file, type: '810 (X12)', count: inv.length });
+        } else if (lower.includes('850')) {
+          const orders = parse850File(raw);
+          for (const o of orders) {
+            const known = KNOWN[o.vendorId];
+            pos.push({
+              poNum: o.poNumber, vendorId: o.vendorId, vendorName: known?.name ?? `Vendor ${o.vendorId}`,
+              storeOrDc: o.storeNumber, flow: known?.flow ?? 'DC',
+              poDate: o.poDate, totalQty: o.totalQty, totalAmt: o.totalAmt,
+              lineCount: o.lineCount ?? o.lines.length,
+              lines: o.lines.map((l) => ({ lineNo: l.lineNo, upc: l.upc, description: l.description, qty: l.qty, uom: l.uom, unitPrice: l.unitPrice ?? 0 })),
+              srcFile: file,
+            });
+          }
+          filesProcessed.push({ file, type: '850 (X12)', count: orders.length });
+        } else if (lower.includes('856')) {
+          const ships = parse856File(raw);
+          for (const a of ships) {
+            const known = KNOWN[a.vendorId];
+            asns.push({
+              asnNum: a.asnNumber, refInvoiceNum: a.refInvoiceNum, vendorId: a.vendorId,
+              storeOrDc: a.storeNumber, poNum: null, flow: known?.flow ?? 'DSD',
+              shipDate: a.shipDate, deliveryDate: a.deliveryDate,
+              cartonCount: a.cartonCount, totalQty: a.totalQty, lineCount: a.itemCount,
+              packs: a.packs.map((p) => ({ sscc: p.sscc, items: p.items })),
+              bolNumber: a.bolNumber, srcFile: file,
+            });
+          }
+          filesProcessed.push({ file, type: '856 (X12)', count: ships.length });
+        }
+      }
+      // ─── PepsiCo PBC810RT flat-file invoices ─────────────────────────────
+      // PBC810RT is PepsiCo's RT extract of the same 1862 invoices already
+      // in PEPSI_EDI_810 (X12). Skip to avoid duplicates; the X12 parse is
+      // cleaner (proper REF*VR vendor IDs and SAC line amounts).
+      else if (lower.startsWith('pbc810rt')) {
+        filesProcessed.push({ file, type: '810 (Flat) — skipped (X12 dup)', count: 0 });
+      }
+      // ─── PepsiCo PDT856 CSV-ish ASN ──────────────────────────────────────
+      else if (lower.startsWith('pdt856') || lower.startsWith('pbc856')) {
+        const ships = parseFlat856File(raw);
+        for (const a of ships) {
+          const known = KNOWN[a.vendorId];
+          asns.push({
+            asnNum: a.asnNumber, refInvoiceNum: a.refInvoiceNum, vendorId: a.vendorId,
+            storeOrDc: a.storeNumber, poNum: null, flow: known?.flow ?? 'DSD',
+            shipDate: a.shipDate, deliveryDate: a.deliveryDate,
+            cartonCount: a.cartonCount, totalQty: a.totalQty, lineCount: a.itemCount,
+            packs: a.packs, bolNumber: a.bolNumber, srcFile: file,
+          });
+        }
+        filesProcessed.push({ file, type: '856 (Flat)', count: ships.length });
+      }
+      // ─── FD internal 850 flat file ───────────────────────────────────────
+      // 850_Input_Flatfile is FD's internal mirror of EDI_850_Output. Skip.
+      else if (lower.includes('850_input') || lower.endsWith('flatfile')) {
+        filesProcessed.push({ file, type: '850 (Flat) — skipped (X12 dup)', count: 0 });
+      }
+    } catch (e) {
+      filesProcessed.push({ file, type: `ERROR ${(e as Error).message.slice(0, 60)}`, count: 0 });
+    }
+  }
+
+  // Backfill ship-from vendor name onto 856s that came in via CSV (no SF segment).
+  for (const a of asns) {
+    if (!KNOWN[a.vendorId]) continue;
+    // nothing to do — vendor name lookup happens in UI
+  }
+
+  // Build vendor list from observed ids + KNOWN.
+  const vmap = new Map<string, Vendor>();
+  for (const i of invoices) if (i.vendorId) vmap.set(i.vendorId, { vendorId: i.vendorId, vendorName: i.vendorName, flow: i.flow });
+  for (const p of pos)      if (p.vendorId) vmap.set(p.vendorId, { vendorId: p.vendorId, vendorName: p.vendorName, flow: p.flow });
+  for (const a of asns)     if (a.vendorId && !vmap.has(a.vendorId)) vmap.set(a.vendorId, { vendorId: a.vendorId, vendorName: KNOWN[a.vendorId]?.name ?? `Vendor ${a.vendorId}`, flow: a.flow });
+  return { vendors: [...vmap.values()].sort((a, b) => a.vendorId.localeCompare(b.vendorId)), pos, asns, invoices, filesProcessed };
+}
