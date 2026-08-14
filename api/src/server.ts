@@ -7,6 +7,8 @@ import fastifyStatic from '@fastify/static';
 import { config } from './config.js';
 import { MemoryStore } from './store/memoryStore.js';
 import { matchRoutes } from './routes/match.js';
+import { aiRoutes } from './routes/ai.js';
+import { aiStatus } from './lib/ai/client.js';
 
 function findWebDist(): string | null {
   const here = fileURLToPath(new URL('.', import.meta.url));
@@ -46,9 +48,15 @@ async function main() {
 
   await app.register(async (api) => {
     api.get('/health', async () => ({ ok: true }));
-    api.get('/config', async () => ({ matching: config.app.matching, approvals: config.app.approvals }));
+    api.get('/config', async () => ({ matching: config.app.matching, approvals: config.app.approvals, ai: aiStatus() }));
     await matchRoutes(api, ds);
+    await aiRoutes(api, ds);
   }, { prefix: '/api' });
+
+  const ai = aiStatus();
+  app.log.info(ai.available
+    ? `[ai] enabled · model ${ai.model}`
+    : `[ai] disabled · ${ai.reason} · deterministic matching is unaffected`);
 
   const webDist = findWebDist();
   if (webDist) {

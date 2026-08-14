@@ -9,6 +9,7 @@
 //   12 (blank), 13 process_date, 14 confirm(H)
 //
 import type { Parsed856, Parsed856Pack, Parsed856Item } from './parse856.js';
+import { normalizeUpc } from './x12.js';
 
 function dsplit(s: string): string[] {
   // simple CSV split — assumes "" wrapped fields, no commas inside
@@ -39,7 +40,7 @@ export function parseFlat856File(raw: string): Parsed856[] {
     } else if (kind === 'D' && upc) {
       let pack: Parsed856Pack | undefined = parsed.packs.find((p) => p.sscc === sscc);
       if (!pack) { pack = { sscc: sscc ?? '', items: [] }; parsed.packs.push(pack); }
-      const item: Parsed856Item = { upc, qty: Number(qtyStr ?? '0') || 0, uom: uom || 'CA' };
+      const item: Parsed856Item = { upc, upcNorm: normalizeUpc(upc), qty: Number(qtyStr ?? '0') || 0, uom: uom || 'CA' };
       pack.items.push(item);
     }
   }

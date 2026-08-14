@@ -20,7 +20,7 @@ export async function matchRoutes(app: FastifyInstance, ds: MemoryStore) {
     const results = ds.listResults(), exceptions = ds.listExceptions({ status: 'OPEN' });
     const lastRun = ds.listRuns().slice(-1)[0] ?? null;
 
-    const statuses = ['3WAY', '2WAY', 'QTY_VAR', 'AMT_VAR', 'INV_NO_ASN', 'ASN_NO_INV', 'PO_NO_RCPT'] as const;
+    const statuses = ['3WAY', '2WAY', 'QTY_VAR', 'AMT_VAR', 'INV_NO_ASN', 'ASN_NO_INV', 'PO_NO_RCPT', 'CREDIT_MEMO'] as const;
     const statusBreakdown = statuses.map((code) => {
       const rows = results.filter((r) => r.matchStatus === code);
       const total = results.length || 1;
@@ -32,11 +32,14 @@ export async function matchRoutes(app: FastifyInstance, ds: MemoryStore) {
       const vAsns   = asns.filter((x) => x.vendorId === v.vendorId);
       const vInvs   = invs.filter((x) => x.vendorId === v.vendorId);
       const vResults = results.filter((r) => r.vendorId === v.vendorId);
-      const clean   = vResults.filter((r) => r.matchStatus === '3WAY' || r.matchStatus === '2WAY').length;
-      const rate    = vResults.length ? Math.round(clean / vResults.length * 1000) / 10 : 0;
+      // Credit memos are excluded from the denominator: they are not matchable
+      // work, so counting them would inflate (or deflate) the clean-match rate.
+      const scored  = vResults.filter((r) => r.matchStatus !== 'CREDIT_MEMO');
+      const clean   = scored.filter((r) => r.matchStatus === '3WAY' || r.matchStatus === '2WAY').length;
+      const rate    = scored.length ? Math.round(clean / scored.length * 1000) / 10 : 0;
       const poAmt   = vPos.reduce((a, x) => a + x.totalAmt, 0);
-      const gross   = vInvs.reduce((a, x) => a + x.grossAmt, 0);
-      const net     = vInvs.reduce((a, x) => a + x.netAmt, 0);
+      const gross   = vInvs.reduce((a, x) => a + x.invoiceAmt, 0);
+      const net     = vInvs.reduce((a, x) => a + x.invoiceAmt, 0);
       const cartons = vAsns.reduce((a, x) => a + x.cartonCount, 0);
       return {
         id: v.vendorId, name: v.vendorName, flow: v.flow,
@@ -47,8 +50,9 @@ export async function matchRoutes(app: FastifyInstance, ds: MemoryStore) {
       };
     }).sort((a, b) => b.invs - a.invs);
 
-    const matchRate = results.length
-      ? Math.round(results.filter((r) => r.matchStatus === '3WAY' || r.matchStatus === '2WAY').length / results.length * 1000) / 10
+    const scorable = results.filter((r) => r.matchStatus !== 'CREDIT_MEMO');
+    const matchRate = scorable.length
+      ? Math.round(scorable.filter((r) => r.matchStatus === '3WAY' || r.matchStatus === '2WAY').length / scorable.length * 1000) / 10
       : 0;
 
     return {
@@ -61,8 +65,11 @@ export async function matchRoutes(app: FastifyInstance, ds: MemoryStore) {
         asn_lines:       asns.reduce((a, x) => a + x.lineCount, 0),
         inv_lines:       invs.reduce((a, x) => a + x.lineCount, 0),
         po_amt:          pos.reduce((a, x) => a + x.totalAmt, 0),
-        inv_gross:       invs.reduce((a, x) => a + x.grossAmt, 0),
-        inv_net:         invs.reduce((a, x) => a + x.netAmt, 0),
+        inv_gross:       invs.filter((x) => x.docType !== 'CREDIT').reduce((a, x) => a + x.invoiceAmt, 0),
+        inv_net:         invs.reduce((a, x) => a + x.invoiceAmt, 0),
+        credit_memos:    invs.filter((x) => x.docType === 'CREDIT').length,
+        credit_amt:      invs.filter((x) => x.docType === 'CREDIT').reduce((a, x) => a + x.invoiceAmt, 0),
+        unreconciled:    invs.filter((x) => !x.reconciled).length,
         match_rate:      matchRate,
         exceptions_open: exceptions.length,
         last_run:        lastRun?.endedAt ?? lastRun?.startedAt ?? null,
@@ -154,5 +161,6 @@ function labelFor(code: MatchStatus): string {
     : code === 'INV_NO_ASN' ? 'Invoice w/o ASN'
     : code === 'ASN_NO_INV' ? 'ASN w/o Invoice'
     : code === 'PO_NO_RCPT' ? 'PO No Receipt'
+    : code === 'CREDIT_MEMO' ? 'Credit Memo'
     : code;
 }

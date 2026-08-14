@@ -87,3 +87,46 @@ export function ediNum(s: string): number | null {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
+
+/**
+ * Scan a segment's trailing (qualifier, value) pairs and return the value for the
+ * first qualifier in `wanted`.
+ *
+ * X12 product-identifier segments (IT1, PO1, LIN) carry a variable-length run of
+ * paired elements, so the value's index is NOT fixed. `IT1**1*CA*70****UA*007800001352`
+ * puts the UPC at index 9, while `PO1*...*2.41*PE*SK*1209176*ST*21280*UA*003000057139`
+ * puts it at index 11. Reading a hardcoded index yields the qualifier itself ("UA")
+ * or an unrelated vendor SKU — which is exactly the bug this replaces.
+ *
+ * @param start index of the first qualifier element in the pair run
+ */
+export function qualifiedValue(seg: X12Segment, start: number, wanted: string[]): string {
+  for (let i = start; i < seg.elements.length - 1; i += 2) {
+    const q = seg.elements[i];
+    if (q && wanted.includes(q)) return seg.elements[i + 1] ?? '';
+  }
+  // Fall back to an unaligned scan — some senders emit an odd number of leading
+  // elements, which shifts every subsequent pair by one.
+  for (let i = start; i < seg.elements.length - 1; i++) {
+    const q = seg.elements[i];
+    if (q && wanted.includes(q)) return seg.elements[i + 1] ?? '';
+  }
+  return '';
+}
+
+/** Product-identifier qualifiers that carry a consumer UPC / GTIN / EAN. */
+export const UPC_QUALIFIERS = ['UA', 'UP', 'UK', 'EN', 'UI', 'IB'];
+
+/** Qualifiers for a vendor/buyer internal SKU — useful as a secondary join key. */
+export const SKU_QUALIFIERS = ['SK', 'VN', 'VP', 'BP', 'IN'];
+
+/**
+ * Normalize a UPC for comparison: digits only, leading zeros stripped.
+ * FD sends 12-digit UPC-A, PepsiCo pads to 14-digit GTIN, and the 850 sometimes
+ * carries an 11-digit form — all three describe the same item.
+ */
+export function normalizeUpc(s: string): string {
+  const digits = (s ?? '').replace(/\D/g, '');
+  const stripped = digits.replace(/^0+/, '');
+  return stripped || digits;
+}

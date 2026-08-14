@@ -84,7 +84,7 @@ export function runFullMatch(input: MatchInput): MatchOutput {
           asnNum: a.asnNum, invoiceNum: i.invoiceNum, invoiceCore: i.invoiceCore,
           asnQty: a.totalQty, invQty: i.totalQty, qtyVarAsnInv: qtyVar,
           asnLines: a.lineCount, invLines: i.lineCount,
-          invAmtGross: i.grossAmt, invAmtNet: i.netAmt,
+          invAmtGross: i.invoiceAmt, invAmtNet: i.invoiceAmt,
           shipDate: a.shipDate, invoiceDate: i.invoiceDate, status,
           matchScore: status === '2WAY' ? 100 : Math.max(0, 100 - Math.round(Math.abs(qtyVar) / Math.max(1, a.totalQty) * 100)),
           exceptionNote: status === 'QTY_VAR' ? `ASN qty ${a.totalQty} vs Invoice qty ${i.totalQty} (Δ ${qtyVar})` : null,
@@ -97,13 +97,22 @@ export function runFullMatch(input: MatchInput): MatchOutput {
   // ── DSD pass: orphan invoices (no ASN) ───────────────────────────────────
   for (const i of input.invoices.filter((x) => x.flow === 'DSD' || x.flow === 'UNK')) {
     if (seenInv.has(i.invoiceNum)) continue;
+    // A credit memo reverses an earlier invoice. There was never a shipment, so
+    // there is no ASN to find and flagging it INV_NO_ASN is a false positive.
+    // 566 of the 1,862 sample documents are credit memos — roughly a third of the
+    // entire exception queue was this single misclassification.
+    const isCredit = i.docType === 'CREDIT';
     results.push(mkResult({
       matchIdSeq: matchIdSeq++, flow: 'DSD', vendorId: i.vendorId, storeOrDc: i.storeOrDc,
       invoiceNum: i.invoiceNum, invoiceCore: i.invoiceCore,
       invQty: i.totalQty, invLines: i.lineCount,
-      invAmtGross: i.grossAmt, invAmtNet: i.netAmt,
-      invoiceDate: i.invoiceDate, status: 'INV_NO_ASN',
-      exceptionNote: 'Invoice received with no ASN — pay-on-invoice exception',
+      invAmtGross: i.invoiceAmt, invAmtNet: i.invoiceAmt,
+      invoiceDate: i.invoiceDate,
+      status: isCredit ? 'CREDIT_MEMO' : 'INV_NO_ASN',
+      matchScore: isCredit ? 100 : 0,
+      exceptionNote: isCredit
+        ? `Credit memo${i.originalInvoiceNum ? ` reversing invoice ${i.originalInvoiceNum}` : ''} — no ASN expected`
+        : 'Invoice received with no ASN — pay-on-invoice exception',
     }));
     seenInv.add(i.invoiceNum);
   }
@@ -121,19 +130,19 @@ export function runFullMatch(input: MatchInput): MatchOutput {
     else if (!i) { status = 'ASN_NO_INV'; note = 'ASN without invoice'; score = 0; }
     else {
       const qtyClean = (p.totalQty === (a.totalQty ?? 0)) && (a.totalQty === (i.totalQty ?? 0));
-      const amtClean = Math.abs(p.totalAmt - i.grossAmt) < AMT_TOL;
+      const amtClean = Math.abs(p.totalAmt - i.invoiceAmt) < AMT_TOL;
       if (qtyClean && amtClean) { status = '3WAY'; }
       else if (!qtyClean) { status = 'QTY_VAR'; note = `PO qty ${p.totalQty} / ASN ${a.totalQty} / Inv ${i.totalQty}`; score = Math.max(0, 100 - Math.round(Math.abs(p.totalQty - i.totalQty) / Math.max(1, p.totalQty) * 50)); }
-      else { status = 'AMT_VAR'; note = `$ variance $${(i.grossAmt - p.totalAmt).toFixed(2)}`; score = Math.max(0, 100 - Math.round(Math.abs(p.totalAmt - i.grossAmt) / Math.max(1, p.totalAmt) * 50)); }
+      else { status = 'AMT_VAR'; note = `$ variance $${(i.invoiceAmt - p.totalAmt).toFixed(2)}`; score = Math.max(0, 100 - Math.round(Math.abs(p.totalAmt - i.invoiceAmt) / Math.max(1, p.totalAmt) * 50)); }
     }
     results.push(mkResult({
       matchIdSeq: matchIdSeq++, flow: 'DC', vendorId: p.vendorId, storeOrDc: p.storeOrDc,
       poNum: p.poNum, asnNum: a?.asnNum ?? null, invoiceNum: i?.invoiceNum ?? null, invoiceCore: i?.invoiceCore ?? null,
       poQty: p.totalQty, asnQty: a?.totalQty ?? null, invQty: i?.totalQty ?? null,
-      poAmt: p.totalAmt, invAmtGross: i?.grossAmt ?? null, invAmtNet: i?.netAmt ?? null,
+      poAmt: p.totalAmt, invAmtGross: i?.invoiceAmt ?? null, invAmtNet: i?.invoiceAmt ?? null,
       qtyVarAsnInv: i && a ? (i.totalQty - a.totalQty) : null,
       qtyVarPoAsn: a ? (a.totalQty - p.totalQty) : null,
-      amtVarPoInv: i ? (i.grossAmt - p.totalAmt) : null,
+      amtVarPoInv: i ? (i.invoiceAmt - p.totalAmt) : null,
       asnLines: a?.lineCount ?? null, invLines: i?.lineCount ?? null,
       shipDate: a?.shipDate ?? null, invoiceDate: i?.invoiceDate ?? null,
       status, matchScore: score, exceptionNote: note,
@@ -143,7 +152,7 @@ export function runFullMatch(input: MatchInput): MatchOutput {
 
   // ── Refresh exceptions ───────────────────────────────────────────────────
   for (const r of results) {
-    if (r.matchStatus === '3WAY' || r.matchStatus === '2WAY') continue;
+    if (r.matchStatus === '3WAY' || r.matchStatus === '2WAY' || r.matchStatus === 'CREDIT_MEMO') continue;
     const severity = severityOf(r.matchStatus);
     const action   = recommendedAction(r.matchStatus);
     const amount   = Math.abs(r.invAmtGross ?? r.poAmt ?? 0);
@@ -166,6 +175,7 @@ export function runFullMatch(input: MatchInput): MatchOutput {
 }
 
 function severityOf(s: MatchStatus): Severity {
+  if (s === 'CREDIT_MEMO') return 'LOW';
   if (s === 'QTY_VAR' || s === 'AMT_VAR' || s === 'INV_NO_ASN') return 'HIGH';
   if (s === 'ASN_NO_INV') return 'MED';
   if (s === 'PO_NO_RCPT') return 'LOW';
@@ -178,6 +188,7 @@ function recommendedAction(s: MatchStatus): string {
     case 'INV_NO_ASN': return 'Request ASN from vendor; pay-on-invoice until 3-way enabled';
     case 'ASN_NO_INV': return 'Hold receipt; await invoice; flag if >5 days from ship date';
     case 'PO_NO_RCPT': return 'Confirm shipment; expedite ASN if past start-ship date';
+    case 'CREDIT_MEMO': return 'Apply credit against the referenced invoice; no ASN required';
     default:           return 'Review with AP';
   }
 }

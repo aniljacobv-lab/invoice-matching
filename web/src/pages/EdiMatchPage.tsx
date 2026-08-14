@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   api, type SummaryResponse, type ExceptionRow, type Severity, type ExceptionStatus, type MatchStatus,
+  type AiStatus,
 } from '../lib/api';
+import { AiQueryPanel, AiTriagePanel, AiBadge } from '../components/AiPanels';
 
 interface Props { onOpenInvoice: (invoiceNum: string) => void; }
 
@@ -18,12 +20,14 @@ const statusFg = (s: MatchStatus): string => s === '3WAY' ? 'text-emerald-700'
   : s === 'AMT_VAR' ? 'text-orange-700'
   : s === 'INV_NO_ASN' ? 'text-red-700'
   : s === 'ASN_NO_INV' ? 'text-blue-700'
+  : s === 'CREDIT_MEMO' ? 'text-slate-600'
   : 'text-amber-800';
 const statusBg = (s: MatchStatus): string => s === '3WAY' ? 'bg-emerald-50'
   : s === '2WAY' ? 'bg-teal-50'
   : s === 'QTY_VAR' || s === 'AMT_VAR' ? 'bg-amber-50'
   : s === 'INV_NO_ASN' ? 'bg-red-50'
   : s === 'ASN_NO_INV' ? 'bg-blue-50'
+  : s === 'CREDIT_MEMO' ? 'bg-slate-50'
   : 'bg-amber-50';
 
 export function EdiMatchPage({ onOpenInvoice }: Props) {
@@ -36,6 +40,11 @@ export function EdiMatchPage({ onOpenInvoice }: Props) {
   const [daysFilter, setDaysFilter] = useState<number | null>(null);
   const [pickedExc, setPickedExc] = useState<ExceptionRow | null>(null);
   const [resolveNote, setResolveNote] = useState('');
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+
+  // AI availability is fetched once and drives whether the AI panels render at
+  // all. A failure here is non-fatal: the page works identically without them.
+  useEffect(() => { api.aiStatus().then(setAiStatus).catch(() => setAiStatus(null)); }, []);
 
   async function load() {
     setLoading(true);
@@ -65,7 +74,10 @@ export function EdiMatchPage({ onOpenInvoice }: Props) {
             <h2 className="text-xl font-semibold tracking-tight text-slate-900">EDI 3-way match</h2>
             <p className="mt-0.5 text-sm text-slate-500">Reconciles 850 PO ↔ 856 ASN ↔ 810 Invoice across PepsiCo DSD and Quaker DC flows.</p>
           </div>
-          <button onClick={runFull} disabled={running} className="fd-btn fd-btn-primary">{running ? 'Running…' : 'Run match'}</button>
+          <div className="flex items-center gap-3">
+            <AiBadge status={aiStatus} />
+            <button onClick={runFull} disabled={running} className="fd-btn fd-btn-primary">{running ? 'Running…' : 'Run match'}</button>
+          </div>
         </div>
         {data && (
           <p className="mt-2 text-[11px] text-slate-400">
@@ -83,15 +95,19 @@ export function EdiMatchPage({ onOpenInvoice }: Props) {
               <Kpi label="POs sent" value={num(data.summary.pos_sent)} sub={usd(data.summary.po_amt)} />
               <Kpi label="ASNs received" value={num(data.summary.asns_received)} sub={`${num(data.summary.cartons)} cartons`} />
               <Kpi label="Invoices" value={num(data.summary.invs_received)} sub={`${num(data.summary.inv_lines)} lines`} />
-              <Kpi label="Gross billed" value={usd(data.summary.inv_gross)} sub={`Net ${usd(data.summary.inv_net)}`} />
+              <Kpi label="Billed" value={usd(data.summary.inv_gross)} sub={`Net of credits ${usd(data.summary.inv_net)}`} />
+              <Kpi label="Credit memos" value={num(data.summary.credit_memos)} sub={usd(data.summary.credit_amt)} tone="text-slate-600" />
               <Kpi label="Match rate" value={pct(data.summary.match_rate)} sub={'clean 3-way / 2-way'} tone="text-emerald-600" />
               <Kpi label="Open exceptions" value={num(data.summary.exceptions_open)} sub="needs review" tone="text-red-600" />
             </section>
 
+            {/* AI QUERY */}
+            <AiQueryPanel status={aiStatus} />
+
             {/* STATUS BREAKDOWN */}
             <section className="fd-card p-5">
               <h3 className="fd-section-title mb-3">Match status breakdown</h3>
-              <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-7">
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-8">
                 {data.statuses.map((s) => (
                   <div key={s.code} className={`rounded-lg border border-slate-200 p-3 ${statusBg(s.code)}`}>
                     <div className={`text-2xl font-bold tabular-nums ${statusFg(s.code)}`}>{num(s.count)}</div>
@@ -198,6 +214,9 @@ export function EdiMatchPage({ onOpenInvoice }: Props) {
               </div>
               {exceptions.length > 200 && <p className="mt-2 text-[11px] text-slate-400">Showing first 200 of {exceptions.length}. Tighten filters to narrow.</p>}
             </section>
+
+            {/* AI TRIAGE */}
+            <AiTriagePanel status={aiStatus} vendor={vendorFilter || undefined} severity={sevFilter} />
 
             {/* SOURCE FILES (audit trail) */}
             <section className="fd-card p-5">

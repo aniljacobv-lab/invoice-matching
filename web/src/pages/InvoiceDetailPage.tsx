@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Invoice, type AdvanceShipNotice, type PurchaseOrder, type MatchResult, type MatchStatus } from '../lib/api';
+import { AiFuzzyMatchPanel, AiAlignPanel } from '../components/AiPanels';
 
 interface Props { invoiceNum: string; onClose: () => void; }
 const usd = (n: number | null | undefined) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -8,6 +9,7 @@ const statusFg = (s: MatchStatus | null): string => !s ? 'text-slate-500'
   : s === '3WAY' ? 'text-emerald-700'
   : s === '2WAY' ? 'text-teal-700'
   : s === 'INV_NO_ASN' || s === 'AMT_VAR' ? 'text-red-700'
+  : s === 'CREDIT_MEMO' ? 'text-slate-600'
   : 'text-amber-700';
 
 export function InvoiceDetailPage({ invoiceNum, onClose }: Props) {
@@ -25,12 +27,17 @@ export function InvoiceDetailPage({ invoiceNum, onClose }: Props) {
 
   // Build a unified line view keyed by UPC
   const byUpc = new Map<string, { invoice?: typeof invoice.lines[0]; po?: typeof po extends { lines: (infer L)[] } ? L : never; asn?: { qty: number } }>();
-  for (const l of invoice.lines) byUpc.set(l.upc, { invoice: l });
+  // Keyed on the NORMALIZED upc: the same item arrives as a 12-digit UPC-A on the
+  // 810 and a zero-padded 14-digit GTIN on the 856, which would otherwise split
+  // one product across two rows and read as a phantom variance.
+  for (const l of invoice.lines) byUpc.set(l.upcNorm || l.upc, { invoice: l });
   if (po) for (const l of po.lines) {
-    const cur = byUpc.get(l.upc) ?? {}; (cur as any).po = l; byUpc.set(l.upc, cur);
+    const k = l.upcNorm || l.upc;
+    const cur = byUpc.get(k) ?? {}; (cur as any).po = l; byUpc.set(k, cur);
   }
   if (asn) for (const p of asn.packs) for (const it of p.items) {
-    const cur = byUpc.get(it.upc) ?? {}; (cur as any).asn = { qty: ((cur as any).asn?.qty ?? 0) + it.qty }; byUpc.set(it.upc, cur);
+    const k = it.upcNorm || it.upc;
+    const cur = byUpc.get(k) ?? {}; (cur as any).asn = { qty: ((cur as any).asn?.qty ?? 0) + it.qty }; byUpc.set(k, cur);
   }
 
   return (
@@ -45,7 +52,17 @@ export function InvoiceDetailPage({ invoiceNum, onClose }: Props) {
               <span>{invoice.vendorName} <span className="text-slate-400">({invoice.vendorId})</span></span>
               <span>·</span><span>Store {invoice.storeOrDc}</span>
               <span>·</span><span>{invoice.invoiceDate ?? 'No date'}</span>
-              <span>·</span><span className="font-medium text-slate-700">{usd(invoice.grossAmt)} gross / {usd(invoice.netAmt)} net</span>
+              <span>·</span><span className="font-medium text-slate-700">{usd(invoice.invoiceAmt)}</span>
+              {invoice.docType === 'CREDIT' && (
+                <span className="fd-pill bg-slate-100 text-slate-700">
+                  Credit memo{invoice.originalInvoiceNum ? ` · reverses ${invoice.originalInvoiceNum}` : ''}
+                </span>
+              )}
+              {!invoice.reconciled && (
+                <span className="fd-pill bg-amber-50 text-amber-800" title={`Header total does not equal the sum of line extensions (${usd(invoice.lineExtSum)}).`}>
+                  Unreconciled
+                </span>
+              )}
               {invoice.poNum && <><span>·</span><span>PO {invoice.poNum}</span></>}
             </p>
           </div>
@@ -105,6 +122,12 @@ export function InvoiceDetailPage({ invoiceNum, onClose }: Props) {
               </tbody>
             </table>
           </section>
+
+          {/* AI: propose a shipment when nothing was linked deterministically */}
+          {!asn && !po && <AiFuzzyMatchPanel invoiceNum={invoice.invoiceNum} />}
+
+          {/* AI: line-level alignment against whichever document is linked */}
+          {(asn || po) && <AiAlignPanel invoiceNum={invoice.invoiceNum} counterpartId={asn?.asnNum ?? po?.poNum} />}
 
           <section className="fd-card p-5">
             <h3 className="fd-section-title mb-2">Source EDI</h3>

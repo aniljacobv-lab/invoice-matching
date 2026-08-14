@@ -58,17 +58,24 @@ export function ingest(ediDir: string): IngestResult {
             const known = KNOWN[i.vendorId];
             invoices.push({
               invoiceNum: i.invoiceNumber, invoiceCore: i.invoiceCore,
+              docType: i.docType,
+              originalInvoiceNum: i.originalInvoiceNum || null,
               vendorId: i.vendorId, vendorName: i.vendorName || known?.name || `Vendor ${i.vendorId}`,
               storeOrDc: i.storeNumber, poNum: null,
               flow: known?.flow ?? 'DSD',
               invoiceDate: i.invoiceDate, paymentTermsDays: i.paymentTermsDays,
-              grossAmt: i.grossUsd ?? 0, netAmt: i.netUsd ?? 0,
+              invoiceAmt: i.invoiceAmt,
+              amountBasis: i.amountBasis,
+              reconciled: i.reconciled,
+              lineExtSum: i.lineExtSum,
+              grossAmt: i.amountSubjectToTerms ?? 0,   // TDS02 — display/audit only
+              netAmt: i.invoiceAmt,                    // legacy alias
               totalQty: i.lines.reduce((a, l) => a + l.qty, 0),
               lineCount: i.lineCount ?? i.lines.length,
               lines: i.lines.map((l) => ({
-                lineNo: l.lineNo, upc: l.upc, description: l.description,
+                lineNo: l.lineNo, upc: l.upc, upcNorm: l.upcNorm, description: l.description,
                 qty: l.qty, uom: l.uom,
-                unitPrice: (l.unitPriceRaw ?? 0) / 100,
+                unitPrice: l.unitPrice ?? 0,
                 amount: l.ext ?? 0,
               })),
               srcFile: file,
@@ -84,7 +91,7 @@ export function ingest(ediDir: string): IngestResult {
               storeOrDc: o.storeNumber, flow: known?.flow ?? 'DC',
               poDate: o.poDate, totalQty: o.totalQty, totalAmt: o.totalAmt,
               lineCount: o.lineCount ?? o.lines.length,
-              lines: o.lines.map((l) => ({ lineNo: l.lineNo, upc: l.upc, description: l.description, qty: l.qty, uom: l.uom, unitPrice: l.unitPrice ?? 0 })),
+              lines: o.lines.map((l) => ({ lineNo: l.lineNo, upc: l.upc, upcNorm: l.upcNorm, vendorSku: l.vendorSku, description: l.description, qty: l.qty, uom: l.uom, unitPrice: l.unitPrice ?? 0 })),
               srcFile: file,
             });
           }
@@ -137,16 +144,42 @@ export function ingest(ediDir: string): IngestResult {
     }
   }
 
-  // Backfill ship-from vendor name onto 856s that came in via CSV (no SF segment).
-  for (const a of asns) {
-    if (!KNOWN[a.vendorId]) continue;
-    // nothing to do — vendor name lookup happens in UI
+  // ─── Dedupe ASNs across transports ───────────────────────────────────────
+  // The same shipment arrives twice: once as X12 (PDT_EDI_856) and once as the
+  // PepsiCo flat extract (PDT856_PBC856...dat). Without this, one physical
+  // delivery becomes two ASN rows, two exceptions, and double-counted cartons.
+  // The X12 copy wins — it carries the full HL pack/item hierarchy, where the
+  // flat extract is header-only.
+  const asnDedup = dedupeAsns(asns);
+  const asnDuplicatesDropped = asns.length - asnDedup.length;
+  if (asnDuplicatesDropped > 0) {
+    filesProcessed.push({
+      file: '(dedupe)', type: `856 duplicates dropped across transports`, count: asnDuplicatesDropped,
+    });
   }
 
   // Build vendor list from observed ids + KNOWN.
   const vmap = new Map<string, Vendor>();
   for (const i of invoices) if (i.vendorId) vmap.set(i.vendorId, { vendorId: i.vendorId, vendorName: i.vendorName, flow: i.flow });
   for (const p of pos)      if (p.vendorId) vmap.set(p.vendorId, { vendorId: p.vendorId, vendorName: p.vendorName, flow: p.flow });
-  for (const a of asns)     if (a.vendorId && !vmap.has(a.vendorId)) vmap.set(a.vendorId, { vendorId: a.vendorId, vendorName: KNOWN[a.vendorId]?.name ?? `Vendor ${a.vendorId}`, flow: a.flow });
-  return { vendors: [...vmap.values()].sort((a, b) => a.vendorId.localeCompare(b.vendorId)), pos, asns, invoices, filesProcessed };
+  for (const a of asnDedup) if (a.vendorId && !vmap.has(a.vendorId)) vmap.set(a.vendorId, { vendorId: a.vendorId, vendorName: KNOWN[a.vendorId]?.name ?? `Vendor ${a.vendorId}`, flow: a.flow });
+  return { vendors: [...vmap.values()].sort((a, b) => a.vendorId.localeCompare(b.vendorId)), pos, asns: asnDedup, invoices, filesProcessed };
+}
+
+/**
+ * Collapse ASNs that describe the same physical shipment. Identity is
+ * (vendorId, asnNum); when both a rich and a sparse copy exist, keep whichever
+ * carries actual pack/item detail.
+ */
+function dedupeAsns(asns: AdvanceShipNotice[]): AdvanceShipNotice[] {
+  const byKey = new Map<string, AdvanceShipNotice>();
+  for (const a of asns) {
+    const k = `${a.vendorId}|${a.asnNum}`;
+    const existing = byKey.get(k);
+    if (!existing) { byKey.set(k, a); continue; }
+    const score = (x: AdvanceShipNotice) =>
+      (x.packs?.reduce((n, p) => n + p.items.length, 0) ?? 0) * 10 + (x.lineCount ?? 0);
+    if (score(a) > score(existing)) byKey.set(k, a);
+  }
+  return [...byKey.values()];
 }

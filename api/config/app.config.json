@@ -15,5 +15,13 @@
       { "tier": 4, "exceptionUsd": 50000 }
     ]
   },
-  "ai": { "model": "claude-sonnet-4-6", "maxTokens": 1024 }
+  "ai": {
+    "$comment": "model MUST be a live API id. 'claude-sonnet-4-6' was pinned here previously and is not a valid id, so every call would have 404'd. Current ids: claude-sonnet-5, claude-opus-5, claude-haiku-4-5. maxCandidates caps how many shortlisted docs get sent to the model per fuzzy-match call; minConfidence is the floor below which a proposal is not surfaced to AP at all.",
+    "model": "claude-sonnet-5",
+    "maxTokens": 4096,
+    "enabled": true,
+    "maxCandidates": 12,
+    "minConfidence": 60,
+    "cacheTtlMinutes": 60
+  }
 }

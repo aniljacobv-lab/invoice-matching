@@ -6,13 +6,25 @@
 //   BEG*<purpose>*<type>*<po_num>**<order_date>...
 //   REF*VR*<vendor_id>
 //   N1*ST*<dest-name>*92*<store_num>
-//   PO1*<line_no>*<qty>*<uom>*<unit_price>**UP*<upc>
+//   PO1*<line_no>*<qty>*<uom>*<unit_price>*PE*SK*<vendor_sku>*ST*<n>*UA*<upc>
 //   PID*F****<description>
 //   CTT*<lines>
 //
-import { splitTransactions, el, findSeg, findAll, ediDate, ediNum, type X12Segment } from './x12.js';
+// The PO1 product-identifier run is variable length: the UPC sits at element 11
+// in the FD/Quaker samples, while element 7 holds the *vendor SKU*. Reading a
+// fixed index 7 (the previous behaviour) meant PO lines carried a SKU in the
+// `upc` field while 810 lines carried the literal string "UA" — so a UPC join
+// between a PO and an invoice could never succeed. Both now use qualifier scans.
+//
+import {
+  splitTransactions, el, findSeg, findAll, ediDate, ediNum,
+  qualifiedValue, normalizeUpc, UPC_QUALIFIERS, SKU_QUALIFIERS, type X12Segment,
+} from './x12.js';
 
-export interface Parsed850Line { lineNo: number; qty: number; uom: string; unitPrice: number | null; upc: string; description: string; }
+export interface Parsed850Line {
+  lineNo: number; qty: number; uom: string; unitPrice: number | null;
+  upc: string; upcNorm: string; vendorSku: string; description: string;
+}
 export interface Parsed850 {
   poNumber: string;
   poDate: string | null;
@@ -46,12 +58,15 @@ function parseOne850(doc: { type: string; segments: X12Segment[] }): Parsed850 |
   for (const s of segs) {
     if (s.tag === 'PO1') {
       if (cur) lines.push(cur);
+      const upc = qualifiedValue(s, 6, UPC_QUALIFIERS);
       cur = {
         lineNo: ediNum(el(s, 1)) ?? lines.length + 1,
         qty: ediNum(el(s, 2)) ?? 0,
         uom: el(s, 3),
         unitPrice: ediNum(el(s, 4)),
-        upc: el(s, 7),
+        upc,
+        upcNorm: normalizeUpc(upc),
+        vendorSku: qualifiedValue(s, 6, SKU_QUALIFIERS),
         description: '',
       };
     } else if (s.tag === 'PID' && cur) {

@@ -13,9 +13,12 @@
 //         LIN****UP*<upc>
 //         SN1**<qty>*<uom>
 //
-import { splitTransactions, el, findSeg, findAll, ediDate, ediNum, type X12Segment } from './x12.js';
+import {
+  splitTransactions, el, findSeg, findAll, ediDate, ediNum,
+  qualifiedValue, normalizeUpc, UPC_QUALIFIERS, type X12Segment,
+} from './x12.js';
 
-export interface Parsed856Item { upc: string; qty: number; uom: string; }
+export interface Parsed856Item { upc: string; upcNorm: string; qty: number; uom: string; }
 export interface Parsed856Pack { sscc: string; items: Parsed856Item[]; }
 export interface Parsed856 {
   asnNumber: string;
@@ -67,15 +70,15 @@ function parseOne856(doc: { type: string; segments: X12Segment[] }): Parsed856 |
         packs.push(curPack);
       } else if (level === 'I') {
         if (curItem && curPack) curPack.items.push(curItem);
-        curItem = { upc: '', qty: 0, uom: 'CA' };
+        curItem = { upc: '', upcNorm: '', qty: 0, uom: 'CA' };
       }
     } else if (s.tag === 'MAN' && curPack && el(s, 1) === 'GM') {
       curPack.sscc = el(s, 2);
     } else if (s.tag === 'LIN' && curItem) {
-      // LIN****UP*<upc>  — qualifier index varies
-      for (let i = 2; i < s.elements.length - 1; i++) {
-        if (s.elements[i] === 'UP') { curItem.upc = s.elements[i + 1] ?? ''; break; }
-      }
+      // LIN*<id>*<qual>*<value>*<qual>*<value>...  — the qualifier index varies,
+      // so scan the pair run rather than assuming 'UP' at a fixed position.
+      curItem.upc = qualifiedValue(s, 2, UPC_QUALIFIERS);
+      curItem.upcNorm = normalizeUpc(curItem.upc);
     } else if (s.tag === 'SN1' && curItem) {
       curItem.qty = ediNum(el(s, 2)) ?? 0;
       curItem.uom = el(s, 3) || 'CA';

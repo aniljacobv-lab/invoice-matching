@@ -14,6 +14,8 @@ export interface Vendor {
 export interface POLine {
   lineNo: number;
   upc: string;
+  upcNorm: string;       // digits only, leading zeros stripped — the cross-doc join key
+  vendorSku: string;
   description: string;
   qty: number;
   uom: string;
@@ -34,7 +36,7 @@ export interface PurchaseOrder {
 }
 
 // 856 — Advance Ship Notice
-export interface ASNLine { upc: string; qty: number; uom: string; sscc?: string; }
+export interface ASNLine { upc: string; upcNorm: string; qty: number; uom: string; sscc?: string; }
 export interface ASNPack { sscc: string; items: ASNLine[]; }
 export interface AdvanceShipNotice {
   asnNum: string;
@@ -54,9 +56,14 @@ export interface AdvanceShipNotice {
 }
 
 // 810 — Invoice
+export type DocType = 'INVOICE' | 'CREDIT';
+/** Which parser rule produced `invoiceAmt`. See parse810.ts for the derivation. */
+export type AmountBasis = 'SAC_LINES' | 'IT1_PRICE' | 'HEADER_ONLY';
+
 export interface InvoiceLine {
   lineNo: number;
   upc: string;
+  upcNorm: string;
   description: string;
   qty: number;
   uom: string;
@@ -66,6 +73,8 @@ export interface InvoiceLine {
 export interface Invoice {
   invoiceNum: string;
   invoiceCore: string;       // PepsiCo: 10-char core without YYMMDD suffix
+  docType: DocType;          // CR documents reverse an earlier invoice
+  originalInvoiceNum: string | null;  // the invoice a credit memo reverses
   vendorId: string;
   vendorName: string;
   storeOrDc: string;
@@ -73,8 +82,23 @@ export interface Invoice {
   flow: Flow;
   invoiceDate: string | null;
   paymentTermsDays: number | null;
+
+  /** Authoritative amount for matching. Negative on credit memos. */
+  invoiceAmt: number;
+  amountBasis: AmountBasis;
+  /** True when invoiceAmt agrees with the sum of line extensions. */
+  reconciled: boolean;
+  lineExtSum: number;
+
+  /**
+   * TDS02. Retained for display and audit only — it does NOT reconcile to line
+   * detail (it runs ~70% above it) and must not drive variance math.
+   * @deprecated use `invoiceAmt`
+   */
   grossAmt: number;
+  /** @deprecated use `invoiceAmt` — kept so existing callers keep compiling. */
   netAmt: number;
+
   totalQty: number;
   lineCount: number;
   lines: InvoiceLine[];
@@ -82,7 +106,10 @@ export interface Invoice {
 }
 
 // ---- match result + exception (mirrors SQL Section 3) ------------------
-export type MatchStatus = '3WAY' | '2WAY' | 'QTY_VAR' | 'AMT_VAR' | 'INV_NO_ASN' | 'ASN_NO_INV' | 'PO_NO_RCPT';
+export type MatchStatus =
+  | '3WAY' | '2WAY' | 'QTY_VAR' | 'AMT_VAR'
+  | 'INV_NO_ASN' | 'ASN_NO_INV' | 'PO_NO_RCPT'
+  | 'CREDIT_MEMO';   // credit memo — reverses an invoice, never has its own ASN
 export type Severity = 'HIGH' | 'MED' | 'LOW';
 export type ExceptionStatus = 'OPEN' | 'ASSIGNED' | 'RESOLVED' | 'WRITTEN_OFF';
 
