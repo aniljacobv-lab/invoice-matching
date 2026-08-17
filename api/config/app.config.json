@@ -16,12 +16,19 @@
     ]
   },
   "ai": {
-    "$comment": "model MUST be a live API id. 'claude-sonnet-4-6' was pinned here previously and is not a valid id, so every call would have 404'd. Current ids: claude-sonnet-5, claude-opus-5, claude-haiku-4-5. maxCandidates caps how many shortlisted docs get sent to the model per fuzzy-match call; minConfidence is the floor below which a proposal is not surfaced to AP at all.",
+    "$comment": "Multi-platform routing. Each capability names an ordered chain of 'platform:model' targets; the first with working credentials answers, and a transport failure (rate limit, timeout, 5xx) falls through to the next. A schema violation does NOT fail over — that indicates a prompt bug, not a provider outage. Chain entries for unconfigured platforms are skipped silently, so this same config works on a deployment that only has one key. A bare model id with no platform prefix means 'anthropic:'. Platforms: anthropic, bedrock, vertex, openai, azure-openai, google.",
     "model": "claude-sonnet-5",
     "maxTokens": 4096,
     "enabled": true,
     "maxCandidates": 12,
     "minConfidence": 60,
-    "cacheTtlMinutes": 60
+    "cacheTtlMinutes": 60,
+    "routes": {
+      "$comment": "Routed by economics. fuzzy-match is low-volume/high-stakes (a wrong match is a duplicate payment) so it gets the strongest model. triage is where cost actually accumulates at 1,300 exceptions, and a human reads every line before acting, so a cheaper model is defensible. nl-query is interactive and only emits a small filter object that ordinary code then executes.",
+      "fuzzy-match": ["anthropic:claude-opus-5", "anthropic:claude-sonnet-5", "bedrock:anthropic.claude-sonnet-4-5-20250929-v1:0"],
+      "triage": ["anthropic:claude-sonnet-5", "openai:gpt-5-mini", "google:gemini-2.5-flash"],
+      "nl-query": ["anthropic:claude-haiku-4-5", "anthropic:claude-sonnet-5", "google:gemini-2.5-flash"],
+      "line-align": ["anthropic:claude-sonnet-5", "openai:gpt-5-mini"]
+    }
   }
 }

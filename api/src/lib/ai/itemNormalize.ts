@@ -155,7 +155,8 @@ export async function alignLines(
         )}\n\nUnmatched lines on ${kind} ${counterpartId}:\n${JSON.stringify(
           unusedCounter.map((c) => ({ ref: c.ref, upc: c.upcNorm, description: c.description || '(no description transmitted)', qty: c.qty })), null, 2,
         )}`,
-        schema: SCHEMA as unknown as Record<string, unknown>,
+        capability: 'line-align',
+    schema: SCHEMA as unknown as Record<string, unknown>,
         cacheKey: signature('align', invoice.invoiceNum, counterpartId, leftovers.map((l) => l.lineNo)),
         maxTokens: 4096,
       });

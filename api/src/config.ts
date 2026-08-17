@@ -13,7 +13,12 @@ export interface ApprovalsConfig {
   autoApproveCleanMatch: boolean;
   thresholds: ApprovalThreshold[];
 }
+export type AiCapability = 'fuzzy-match' | 'triage' | 'nl-query' | 'line-align';
+/** Ordered failover chain per capability. String or array of "platform:model". */
+export type AiRoutes = Partial<Record<AiCapability, string | string[]>>;
+
 export interface AiConfig {
+  /** Fallback model when a capability has no route configured. */
   model: string;
   maxTokens: number;
   /** Master switch. Even when true, AI stays off unless ANTHROPIC_API_KEY is set. */
@@ -23,6 +28,7 @@ export interface AiConfig {
   /** Proposals below this confidence are withheld from AP entirely. */
   minConfidence: number;
   cacheTtlMinutes: number;
+  routes: AiRoutes;
 }
 export interface AppConfig {
   matching: MatchingConfig;
@@ -38,6 +44,12 @@ const DEFAULTS: AppConfig = {
   ai: {
     model: 'claude-sonnet-5', maxTokens: 4096, enabled: true,
     maxCandidates: 12, minConfidence: 60, cacheTtlMinutes: 60,
+    routes: {
+      'fuzzy-match': ['anthropic:claude-opus-5', 'anthropic:claude-sonnet-5'],
+      'triage': ['anthropic:claude-sonnet-5'],
+      'nl-query': ['anthropic:claude-haiku-4-5', 'anthropic:claude-sonnet-5'],
+      'line-align': ['anthropic:claude-sonnet-5'],
+    },
   },
 };
 
@@ -58,6 +70,13 @@ app.matching.qtyTolPct   = numEnv('MATCH_QTY_TOL_PCT', app.matching.qtyTolPct);
 app.matching.absDollarTol = numEnv('MATCH_ABS_TOL_USD', app.matching.absDollarTol);
 
 app.ai.model = process.env.ANTHROPIC_MODEL || app.ai.model;
+
+// AI_ROUTES lets a deployment remap every capability without editing the image,
+// e.g. AI_ROUTES='{"triage":["openai:gpt-5-mini"]}'. Merged over the file config.
+if (process.env.AI_ROUTES) {
+  try { app.ai.routes = { ...app.ai.routes, ...JSON.parse(process.env.AI_ROUTES) }; }
+  catch { console.warn('[config] AI_ROUTES is not valid JSON — ignoring'); }
+}
 if (process.env.AI_ENABLED != null && process.env.AI_ENABLED !== '') {
   app.ai.enabled = !/^(0|false|no|off)$/i.test(process.env.AI_ENABLED);
 }

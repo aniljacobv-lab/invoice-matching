@@ -22,12 +22,97 @@ const usd = (n: number | null | undefined) =>
 
 export function AiBadge({ status }: { status: AiStatus | null }) {
   if (!status) return null;
-  return status.available ? (
-    <span className="fd-pill bg-violet-50 text-violet-700" title={`Model: ${status.model}`}>
+  if (!status.available) {
+    return <span className="fd-pill bg-slate-100 text-slate-500" title={status.reason}>AI off</span>;
+  }
+  const live = status.platforms?.filter((p) => p.available) ?? [];
+  const title = live.length
+    ? `Serving: ${status.model}\nConfigured platforms: ${live.map((p) => p.platform).join(', ')}`
+    : `Serving: ${status.model}`;
+  return (
+    <span className="fd-pill bg-violet-50 text-violet-700" title={title}>
       AI on · {status.model}
+      {live.length > 1 && <span className="ml-1 text-violet-500">+{live.length - 1}</span>}
     </span>
-  ) : (
-    <span className="fd-pill bg-slate-100 text-slate-500" title={status.reason}>AI off</span>
+  );
+}
+
+/**
+ * Which platforms are wired up and how each capability is routed.
+ * Renders whether or not AI is available — when nothing is configured this is
+ * the fastest way for an operator to see exactly which credential is missing.
+ */
+export function AiPlatformPanel({ status }: { status: AiStatus | null }) {
+  const [open, setOpen] = useState(false);
+  if (!status?.platforms?.length) return null;
+  const live = status.platforms.filter((p) => p.available);
+
+  return (
+    <section className="fd-card p-5">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center justify-between gap-3 text-left">
+        <div>
+          <h3 className="fd-section-title">AI platforms &amp; routing</h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            {live.length === 0
+              ? 'No platform configured — AI features are off, matching is unaffected'
+              : `${live.length} of ${status.platforms.length} platforms configured · ${live.map((p) => p.platform).join(', ')}`}
+          </p>
+        </div>
+        <span className="text-slate-400">{open ? '▾' : '▸'}</span>
+      </button>
+
+      {open && (
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div>
+            <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Platforms</h4>
+            <div className="space-y-1">
+              {status.platforms.map((p) => (
+                <div key={p.platform} className="flex items-start gap-2 text-xs">
+                  <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${p.available ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  <div className="min-w-0">
+                    <span className={p.available ? 'font-medium text-slate-700' : 'text-slate-500'}>{p.platform}</span>
+                    {!p.available && <span className="block text-[10px] text-slate-400">{p.reason}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Routing &amp; failover</h4>
+            <div className="space-y-2">
+              {status.routes?.map((r) => (
+                <div key={r.capability} className="text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-slate-700">{r.capability}</span>
+                    {!r.usable && <span className="fd-pill bg-amber-50 text-amber-700">no credentials</span>}
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-slate-500">
+                    {r.chain.map((c, i) => (
+                      <span key={c} className="flex items-center gap-1">
+                        {i > 0 && <span className="text-slate-300">→</span>}
+                        <code className={i === 0 ? 'rounded bg-slate-100 px-1 text-slate-700' : 'rounded bg-slate-50 px-1'}>{c}</code>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {!!status.usage?.calls && (
+            <div className="md:col-span-2 border-t border-slate-100 pt-3 text-[11px] text-slate-500">
+              {status.usage.calls} calls · {(status.usage.inputTokens + status.usage.outputTokens).toLocaleString('en-US')} tokens ·{' '}
+              {status.usage.cacheHits} cache hits
+              {status.usage.failovers > 0 && <span className="text-amber-700"> · {status.usage.failovers} failovers</span>}
+              {status.usage.byPlatform && Object.entries(status.usage.byPlatform).map(([p, u]) => (
+                <span key={p} className="ml-2 rounded bg-slate-50 px-1.5 py-0.5">{p}: {u.calls}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

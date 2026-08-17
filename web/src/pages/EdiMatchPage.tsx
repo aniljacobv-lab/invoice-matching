@@ -3,7 +3,7 @@ import {
   api, type SummaryResponse, type ExceptionRow, type Severity, type ExceptionStatus, type MatchStatus,
   type AiStatus,
 } from '../lib/api';
-import { AiQueryPanel, AiTriagePanel, AiBadge } from '../components/AiPanels';
+import { AiQueryPanel, AiTriagePanel, AiBadge, AiPlatformPanel } from '../components/AiPanels';
 
 interface Props { onOpenInvoice: (invoiceNum: string) => void; }
 
@@ -217,6 +217,9 @@ export function EdiMatchPage({ onOpenInvoice }: Props) {
 
             {/* AI TRIAGE */}
             <AiTriagePanel status={aiStatus} vendor={vendorFilter || undefined} severity={sevFilter} />
+
+            {/* AI PLATFORMS */}
+            <AiPlatformPanel status={aiStatus} />
 
             {/* SOURCE FILES (audit trail) */}
             <section className="fd-card p-5">

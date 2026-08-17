@@ -257,6 +257,7 @@ export async function fuzzyMatchInvoice(
   const out = await askStructured<{ proposals: FuzzyProposal[] }>({
     system: SYSTEM,
     user: `Assess these candidates against the invoice.\n\n${JSON.stringify(payload, null, 2)}`,
+    capability: 'fuzzy-match',
     schema: SCHEMA as unknown as Record<string, unknown>,
     cacheKey: signature('fuzzy', invoice.invoiceNum, candidates.map((c) => `${c.id}:${c.prescreen}`)),
   });

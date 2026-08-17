@@ -170,6 +170,7 @@ export async function triageExceptions(input: TriageInput, limit = 40): Promise<
   const out = await askStructured<TriageResult>({
     system: SYSTEM,
     user: `Queue totals:\n${JSON.stringify(totals, null, 2)}\n\nVendor context:\n${JSON.stringify(vendorStats, null, 2)}\n\nExceptions to triage:\n${JSON.stringify(rows, null, 2)}`,
+    capability: 'triage',
     schema: SCHEMA as unknown as Record<string, unknown>,
     cacheKey: signature('triage', rows.map((r) => `${r.excId}:${r.amountUsd}:${r.ageDays}`)),
     maxTokens: 8192,

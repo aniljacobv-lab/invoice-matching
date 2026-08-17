@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { MemoryStore } from '../store/memoryStore.js';
-import { aiStatus, aiUsage, cacheStats, clearAiCache, AiUnavailableError } from '../lib/ai/client.js';
+import { aiStatus, aiUsage, cacheStats, clearAiCache, aiPlatformDetail, AiUnavailableError } from '../lib/ai/client.js';
 import { fuzzyMatchInvoice, shortlistCandidates } from '../lib/ai/fuzzyMatch.js';
 import { triageExceptions } from '../lib/ai/triage.js';
 import { nlQuery } from '../lib/ai/nlQuery.js';
@@ -32,6 +32,7 @@ export async function aiRoutes(app: FastifyInstance, ds: MemoryStore) {
   // ──── GET /ai/status ─────────────────────────────────────────────────────
   app.get('/ai/status', async () => ({
     ...aiStatus(),
+    ...aiPlatformDetail(),
     usage: aiUsage(),
     cache: cacheStats(),
     settings: {

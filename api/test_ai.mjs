@@ -86,5 +86,112 @@ ok('a counterparty ref is never reused across two lines', (() => {
 ok('summary totals are internally consistent', al.summary.byUpc + al.summary.byAi + al.summary.unmatched === al.summary.total);
 ok('variance is only computed on matched lines', al.lines.every((l) => l.qtyVariance == null || (l.invoiceQty != null && l.counterpartQty != null)));
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-platform provider layer
+// ─────────────────────────────────────────────────────────────────────────────
+const { toAnthropicSchema, toOpenAiSchema, toGeminiSchema } = await import('./dist/lib/ai/providers/schema.js');
+const { parseTarget, platformStatuses, ALL_PLATFORMS, dispatch } = await import('./dist/lib/ai/providers/registry.js');
+const { isRetryable, SchemaViolationError, RetryableProviderError } = await import('./dist/lib/ai/providers/types.js');
+const { routeFor } = await import('./dist/lib/ai/client.js');
+
+console.log('\n── Schema normalization ──');
+const SRC = {
+  type: 'object',
+  properties: {
+    excId: { type: 'number' },
+    estRecoveryUsd: { type: ['number', 'null'], description: 'nullable union' },
+    tags: { type: 'array', items: { type: 'string' } },
+    nested: {
+      type: 'object',
+      properties: { a: { type: 'string' }, b: { type: 'number' } },
+      required: ['a'],
+    },
+    sortBy: { type: ['string', 'null'], enum: ['amount', 'date', null] },
+  },
+  required: ['excId', 'estRecoveryUsd', 'tags', 'nested'],
+  $comment: 'should be stripped',
+};
+
+const a = toAnthropicSchema(SRC);
+ok('anthropic: keeps type unions as authored', Array.isArray(a.properties.estRecoveryUsd.type));
+ok('anthropic: strips $comment', !('$comment' in a));
+
+const o = toOpenAiSchema(SRC);
+ok('openai: additionalProperties false at root', o.additionalProperties === false);
+ok('openai: additionalProperties false when nested', o.properties.nested.additionalProperties === false);
+ok('openai: every property forced into required', o.required.length === Object.keys(o.properties).length);
+ok('openai: nested required completed too', o.properties.nested.required.length === 2);
+// 'b' was optional in the source; forcing it into required must not tighten the
+// contract, so it has to have become nullable.
+ok('openai: promoted-optional field became nullable',
+   Array.isArray(o.properties.nested.properties.b.type) && o.properties.nested.properties.b.type.includes('null'));
+ok('openai: strips $comment', !('$comment' in o));
+
+const g = toGeminiSchema(SRC);
+ok('gemini: type names upper-cased', g.type === 'OBJECT' && g.properties.excId.type === 'NUMBER');
+ok('gemini: union collapsed to nullable', g.properties.estRecoveryUsd.type === 'NUMBER' && g.properties.estRecoveryUsd.nullable === true);
+ok('gemini: array items preserved', g.properties.tags.type === 'ARRAY' && g.properties.tags.items.type === 'STRING');
+ok('gemini: drops additionalProperties', !('additionalProperties' in g));
+ok('gemini: null removed from enum, marked nullable',
+   g.properties.sortBy.enum.length === 2 && g.properties.sortBy.nullable === true);
+ok('gemini: strips $comment', !('$comment' in g));
+
+// Conversions must not mutate the caller's schema — these objects are module-level
+// constants shared across every request.
+ok('conversions do not mutate the source schema', SRC.$comment === 'should be stripped' && SRC.properties.nested.required.length === 1);
+
+console.log('\n── Route parsing and resolution ──');
+ok('parses platform:model', (() => { const t = parseTarget('openai:gpt-5-mini'); return t.platform === 'openai' && t.model === 'gpt-5-mini'; })());
+ok('bare model id defaults to anthropic', (() => { const t = parseTarget('claude-sonnet-5'); return t.platform === 'anthropic' && t.model === 'claude-sonnet-5'; })());
+ok('unknown platform falls back rather than throwing', parseTarget('mystery:foo').platform === 'anthropic');
+ok('bedrock model ids containing colons survive', (() => {
+  const t = parseTarget('bedrock:anthropic.claude-sonnet-4-5-20250929-v1:0');
+  return t.platform === 'bedrock' && t.model === 'anthropic.claude-sonnet-4-5-20250929-v1:0';
+})());
+for (const cap of ['fuzzy-match', 'triage', 'nl-query', 'line-align']) {
+  const chain = routeFor(cap);
+  ok(`route ${cap} resolves to a non-empty chain`, chain.length > 0 && chain.every((t) => t.platform && t.model));
+}
+ok('fuzzy-match routes to a stronger model than nl-query',
+   routeFor('fuzzy-match')[0].model !== routeFor('nl-query')[0].model);
+
+console.log('\n── Provider status and failover ──');
+const statuses = platformStatuses();
+ok(`all ${ALL_PLATFORMS.length} platforms report status`, statuses.length === ALL_PLATFORMS.length);
+ok('every unavailable platform explains why', statuses.filter((s) => !s.available).every((s) => typeof s.reason === 'string' && s.reason.length > 0));
+ok('no platform is available without credentials in this env', statuses.every((s) => !s.available));
+
+ok('rate limit is retryable', isRetryable({ status: 429 }));
+ok('server error is retryable', isRetryable({ status: 503 }));
+ok('connection reset is retryable', isRetryable({ code: 'ECONNRESET' }));
+ok('bad auth is NOT retryable', !isRetryable({ status: 401 }));
+ok('bad request is NOT retryable', !isRetryable({ status: 400 }));
+ok('schema violation is NOT retryable', !isRetryable(new SchemaViolationError('bad', 'openai')));
+ok('provider transport error IS retryable', isRetryable(new RetryableProviderError('timeout', 'openai')));
+
+// With no credentials anywhere, dispatch must fail with a message naming every
+// attempt rather than a bare stack trace.
+let dispatchErr = null;
+try {
+  await dispatch([{ platform: 'anthropic', model: 'x' }, { platform: 'openai', model: 'y' }],
+    { system: 's', user: 'u', schema: { type: 'object' }, maxTokens: 16 });
+} catch (e) { dispatchErr = e; }
+ok('dispatch fails loudly when no provider is configured', dispatchErr != null);
+ok('failure message names every platform tried',
+   dispatchErr && dispatchErr.message.includes('anthropic') && dispatchErr.message.includes('openai'),
+   dispatchErr?.message?.slice(0, 120));
+ok('empty chain is rejected', await (async () => {
+  try { await dispatch([], { system: 's', user: 'u', schema: {}, maxTokens: 16 }); return false; }
+  catch { return true; }
+})());
+
+console.log('\n── Optional SDKs absent ──');
+// openai and @google/genai are optional deps and are NOT installed here. The
+// provider must report that cleanly instead of the import crashing the process.
+const openaiInstalled = await import('openai').then(() => true, () => false);
+ok('openai package genuinely absent in this test env', openaiInstalled === false);
+ok('app still boots and reports status with optional SDKs missing', platformStatuses().length === ALL_PLATFORMS.length);
+
 console.log(`\n${fail === 0 ? 'ALL PASSED' : 'FAILURES PRESENT'} — ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

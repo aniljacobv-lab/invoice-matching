@@ -40,7 +40,61 @@ stats) and `GET /api/ai/candidates/:invoiceNum` (the deterministic prescreen on 
 own — no model call, no key required).
 
 Tunables live in `api/config/app.config.json` under `ai`, overridable with the
-`ANTHROPIC_MODEL` and `AI_ENABLED` env vars.
+`ANTHROPIC_MODEL`, `AI_ENABLED` and `AI_ROUTES` env vars.
+
+### Multiple AI platforms
+
+Six platforms are supported behind one interface. Set credentials for whichever
+you use — anything unconfigured is skipped, so the same image runs everywhere.
+
+| Platform | Credentials | Extra package |
+|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` | none (built in) |
+| `bedrock` | AWS credential chain + `AWS_REGION` | `npm run add:bedrock` |
+| `vertex` | `GOOGLE_CLOUD_PROJECT` + ADC | `npm run add:vertex` |
+| `openai` | `OPENAI_API_KEY` | `npm run add:openai` |
+| `azure-openai` | `AZURE_OPENAI_API_KEY`, `_ENDPOINT`, `_DEPLOYMENT` | `npm run add:openai` |
+| `google` | `GOOGLE_API_KEY` | `npm run add:google` |
+
+Bedrock and Vertex serve Claude inside your own AWS or GCP tenancy, which is
+usually what enterprise data-residency and procurement review actually require.
+They need no prompt or schema changes.
+
+The extra packages are deliberately **not** in `dependencies` — an
+Anthropic-only deployment installs nothing additional and the Docker image stays
+small. A missing package is reported as "not installed" with the install command,
+never as a crash.
+
+### Routing and failover
+
+Each capability routes independently, with an ordered fallback chain:
+
+```json
+"routes": {
+  "fuzzy-match": ["anthropic:claude-opus-5", "anthropic:claude-sonnet-5"],
+  "triage":      ["anthropic:claude-sonnet-5", "openai:gpt-5-mini"],
+  "nl-query":    ["anthropic:claude-haiku-4-5", "anthropic:claude-sonnet-5"],
+  "line-align":  ["anthropic:claude-sonnet-5", "openai:gpt-5-mini"]
+}
+```
+
+The economics differ per capability, which is why they are separated. `fuzzy-match`
+is low-volume and high-stakes — a wrong match is a duplicate payment — so it gets
+the strongest model. `triage` runs across ~1,300 exceptions and is where cost
+actually accumulates, and a human reads every line before acting, so a cheaper
+model is defensible. `nl-query` is interactive and only emits a small filter object
+that ordinary code then executes.
+
+Override without rebuilding via `AI_ROUTES`:
+
+```
+AI_ROUTES={"triage":["openai:gpt-5-mini","google:gemini-2.5-flash"]}
+```
+
+Failover triggers on transport errors only — rate limits, timeouts, 5xx. A schema
+violation does **not** fail over, because the same request will fail identically
+elsewhere and retrying would burn money hiding a prompt bug. `GET /api/ai/status`
+reports per-platform availability, per-capability routing, and a failover count.
 
 ### Guarantees
 

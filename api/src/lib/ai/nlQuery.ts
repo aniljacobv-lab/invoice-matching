@@ -108,6 +108,7 @@ export async function nlQuery(question: string, data: QueryData, today: string):
   const plan = await askStructured<{ interpretation: string; filter: QueryFilter; caveats: string[] }>({
     system: SYSTEM,
     user: `Today's date is ${today}.\n\nQuestion: ${question}`,
+    capability: 'nl-query',
     schema: SCHEMA as unknown as Record<string, unknown>,
     cacheKey: signature('nlq', question, today),
   });

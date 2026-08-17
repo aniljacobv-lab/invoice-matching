@@ -63,11 +63,23 @@ export interface MatchResult { matchId: number; flow: Flow; vendorId: string; st
 // Every AI endpoint may answer { available: false, reason } when no API key is
 // configured. Callers must handle that shape rather than assuming a payload.
 
+export type Platform = 'anthropic' | 'bedrock' | 'vertex' | 'openai' | 'azure-openai' | 'google';
+
+export interface PlatformStatus { platform: Platform; available: boolean; reason?: string; }
+export interface RouteStatus { capability: string; chain: string[]; usable: boolean; }
+
 export interface AiStatus {
   available: boolean;
+  /** "platform:model" serving the default capability. */
   model: string;
   reason?: string;
-  usage?: { calls: number; inputTokens: number; outputTokens: number; cacheHits: number; errors: number };
+  platforms?: PlatformStatus[];
+  routes?: RouteStatus[];
+  usage?: {
+    calls: number; inputTokens: number; outputTokens: number;
+    cacheHits: number; errors: number; failovers: number;
+    byPlatform?: Record<string, { calls: number; inputTokens: number; outputTokens: number; errors: number; failovers: number }>;
+  };
   cache?: { entries: number; ttlMinutes: number };
   settings?: { maxCandidates: number; minConfidence: number; maxTokens: number };
   capabilities?: string[];
